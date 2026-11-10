@@ -15,6 +15,7 @@ from .agent import sse, stream_turn
 from .config import ChatConfig, db_path, load_config, save_overrides
 from .llm import list_models, test_connection
 from .memory import Store
+from .openui import OpenUIError, generate_ui
 from .prompts import suggested_prompts
 from .search import SearchEngine
 
@@ -26,6 +27,10 @@ class ChatRequest(BaseModel):
     thread_id: str | None = None
     message: str = Field(min_length=1, max_length=MAX_MESSAGE_CHARS)
     timezone: str | None = None
+
+
+class OpenUIRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=MAX_MESSAGE_CHARS)
 
 
 class SettingsRequest(BaseModel):
@@ -63,6 +68,14 @@ async def index():
     page = STATIC_DIR / "index.html"
     if not page.exists():
         return JSONResponse({"error": "UI not built"}, status_code=503)
+    return FileResponse(page)
+
+
+@app.get("/openui")
+async def openui_page():
+    page = STATIC_DIR / "openui.html"
+    if not page.exists():
+        return JSONResponse({"error": "OpenUI view is not built"}, status_code=503)
     return FileResponse(page)
 
 
@@ -149,6 +162,22 @@ async def prompts(request: Request):
         cfg = load_config(conn)
     items, source = await suggested_prompts(store(request), cfg)
     return {"prompts": items, "source": source}
+
+
+@app.post("/api/openui")
+async def openui_answer(payload: OpenUIRequest, request: Request):
+    with store(request).connection() as conn:
+        cfg = load_config(conn)
+    if not cfg.configured:
+        raise HTTPException(status_code=400, detail="No API key configured. Open Settings and add one.")
+    try:
+        result = await generate_ui(store(request), engine(request), cfg, payload.message.strip())
+    except OpenUIError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except TimeoutError as exc:
+        raise HTTPException(status_code=504, detail="The model took too long. Try a narrower question.") from exc
+    result["model"] = cfg.model
+    return result
 
 
 @app.get("/api/threads")

@@ -1,0 +1,14 @@
+<!doctype html><html><body><div id="root"></div>
+<script src="/vendor/openui/openui-bundle.min.js"></script>
+<script>
+window.addEventListener('load', () => {
+  const lib = window.__OpenUI?.openuiChatLibrary;
+  window.__probe = {
+    keys: Object.keys(window.__OpenUI || {}),
+    libKeys: lib ? Object.keys(lib) : null,
+    components: lib ? Object.keys(lib.components || {}) : null,
+    root: lib?.root,
+    promptType: typeof lib?.prompt,
+  };
+});
+</script></body></html>

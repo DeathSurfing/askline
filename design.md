@@ -324,6 +324,28 @@ This keeps the home screen tied to the user's actual work without adding a secon
 a background job. The trade is one extra model call after the first turn, hidden behind a
 fallback.
 
+## The OpenUI lab
+
+The chat answer is prose. The OpenUI lab answers the same question as a small interface:
+a card with a header, the answer, structured facts, follow-up buttons, and sources. The
+renderer is the official OpenUI browser bundle, vendored into `app/static/vendor/openui/`
+so the app keeps its no-build property.
+
+The first attempt asked the model to write OpenUI Lang. LFM3 1.7B failed in four ways:
+it rambled past the program, repeated `root`, wrote named arguments where the language
+takes positional ones, and emitted multiline arrays that the line-oriented parser cannot
+read. The fix is constrained generation. The model returns JSON with a title, subtitle,
+answer, three or four items, and two follow-ups. llama.cpp enforces the schema with
+`response_format`, so the reply is always valid JSON. `app/openui.py` then composes the
+OpenUI program: a `ListBlock` for a summary, a `Table` with three columns for a
+comparison, a `FollowUpBlock` for the next questions, and a `sources` array built from the
+real search results. `pick_layout` chooses the shape from the question's words.
+
+This is a deliberate trade. A larger model could write the language directly and produce
+freer layouts. With a 1.7B model on a laptop GPU, a valid interface in three seconds beats
+an ambitious one that fails. The JSON step also makes the sources trustworthy, because
+the model never writes a URL.
+
 ## Rejected alternatives
 
 * **LangChain's `AgentExecutor`.** Its loop is unbounded and its intermediate steps are

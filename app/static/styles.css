@@ -306,6 +306,10 @@ body {
   color: var(--text);
 }
 
+.topbar__link {
+  text-decoration: none;
+}
+
 .btn-ghost:hover:not(:disabled),
 .btn-outline:hover:not(:disabled),
 .icon-btn:hover:not(:disabled),

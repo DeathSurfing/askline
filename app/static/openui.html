@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Askline OpenUI lab</title>
+  <link rel="stylesheet" href="/static/openui/openui.css">
+  <link rel="stylesheet" href="/static/vendor/openui/openui-styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#lab">Skip to the lab</a>
+
+  <header class="lab-bar">
+    <a class="lab-brand" href="/">
+      <span class="lab-brand__mark" aria-hidden="true"></span>
+      <span>Askline</span>
+    </a>
+    <span class="lab-tag">OpenUI lab</span>
+    <a class="lab-back" href="/">Back to chat</a>
+  </header>
+
+  <main class="lab" id="lab">
+    <section class="intro">
+      <p class="intro__eyebrow">Generative interface</p>
+      <h1 class="intro__title">Ask a question.<br>Get a small interface.</h1>
+      <p class="intro__lede">Askline searches the web, chooses a shape for the answer, and fills an OpenUI program. Every component below comes from the live results.</p>
+    </section>
+
+    <form class="composer" id="form">
+      <label class="sr-only" for="question">Question</label>
+      <input class="composer__input" id="question" name="question" type="text" autocomplete="off" placeholder="What should the interface explain?" required>
+      <button class="composer__submit" id="submit" type="submit">
+        <span id="submit-label">Compose</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6"/></svg>
+      </button>
+    </form>
+
+    <ul class="starters" id="starters" aria-label="Example questions">
+      <li><button type="button" class="starter" data-question="Compare logical and physical replication in Postgres">Postgres replication, compared</button></li>
+      <li><button type="button" class="starter" data-question="What changed in the latest Python release?">What changed in Python</button></li>
+      <li><button type="button" class="starter" data-question="Which open-source security advisories matter this week?">This week's advisories</button></li>
+    </ul>
+
+    <section class="thread" id="thread" aria-live="polite" aria-label="Generated interfaces"></section>
+
+    <p class="footnote">Rendered with <a href="https://www.openui.com/" rel="noreferrer">OpenUI</a> and grounded in live search results. Answers can be wrong. Follow the sources.</p>
+  </main>
+
+  <script src="/static/vendor/openui/openui-bundle.min.js"></script>
+  <script src="/static/openui/openui.js" defer></script>
+</body>
+</html>

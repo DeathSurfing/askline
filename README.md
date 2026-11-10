@@ -223,6 +223,8 @@ cold copy of the directory is safer than copying the file under load.
 | `POST /api/settings/test` | One completion against submitted or stored settings |
 | `GET /api/models` | Model ids from the endpoint's model list |
 | `GET /api/prompts` | Three suggested questions from the user's recent history |
+| `GET /openui` | The OpenUI lab page |
+| `POST /api/openui` | Question to a generated OpenUI interface |
 | `GET /api/threads` | Thread list with turn counts |
 | `POST /api/threads` | New thread |
 | `GET /api/threads/{id}` | Thread and full turn history with sources |
@@ -248,6 +250,26 @@ response is `text/event-stream` with these events.
 The turn is stored only after `done`. A disconnected stream leaves the user question in
 the log and no assistant answer beside it.
 
+## The OpenUI lab
+
+`/openui` is a second surface. Ask a question and the app returns a generated
+interface rather than a chat bubble: a card with a header, a short answer, a numbered
+list or a comparison table, related questions, and the sources behind the answer. The
+renderer is [OpenUI](https://www.openui.com/) running from a vendored browser bundle, so
+there is no build step.
+
+The model does not write OpenUI Lang directly. LFM3 1.7B cannot hold the 26 KB language
+spec reliably; attempts produced raw markup, repeated roots, and truncated programs. The
+server asks for a small JSON object, enforces its shape with llama.cpp's JSON schema, and
+composes the OpenUI program from that object. The model still chooses the title, the
+answer, the facts, and the follow-up questions, and the layout follows the question: a
+comparison question gets a table, everything else gets a numbered list. Every program
+ends with the real search sources, so the card's source strip cannot drift from the
+answer.
+
+`POST /api/openui` accepts `message` and returns the program, its sources, the layout,
+and the elapsed time. It runs its own search, so it works before any chat thread exists.
+
 ## Develop
 
 Python 3.11 or newer is required. The container uses 3.12.
@@ -268,7 +290,7 @@ The suite replaces the chat model with a scripted `BaseChatModel` and feeds the 
 engine an `httpx.MockTransport`, so routing, the two-round cap, source merging, citation
 filtering, SSE framing, persistence, caching, settings, and the memory block are exercised
 through the real application. Saved Bing and DuckDuckGo markup keeps the parser tests
-honest about page structure. The current suite has 51 tests.
+honest about page structure. The current suite has 65 tests.
 
 A live check still matters. Point the app at a real endpoint, ask a question that needs
 today's web, and confirm that the answer cites a page whose snippet supports it. Then ask
@@ -310,11 +332,12 @@ app/
   graph.py      LangGraph state machine, prompt, tool binding
   llm.py        provider factory, connection test, model list
   prompts.py    suggestions derived from recent questions, cached by ask count
+  openui.py     JSON from the model, composed into an OpenUI Lang program
   search.py     SearXNG and fallback parsers, relevance filter, cache
   memory.py     SQLite schema, transcript, FTS5 recall, timeline
   citations.py  citation parsing and invalid marker removal
   schemas.py    shared records
-  static/       one HTML page, one stylesheet, one script
+  static/       the chat page plus the OpenUI lab and its vendored renderer
 tests/          pytest suite with model and transport seams
 design.md       the full design and its rejected alternatives
 searxng/        search service configuration
