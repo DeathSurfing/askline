@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Askline</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to conversation</a>
+
+  <div class="app">
+    <header class="topbar">
+      <button type="button" class="icon-btn menu-btn" id="menu-btn" aria-controls="sidebar" aria-expanded="false" aria-label="Open threads">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
+      <div class="brand">
+        <span class="brand__mark" aria-hidden="true"></span>
+        <span>Askline</span>
+      </div>
+      <span class="pill" id="model-chip">Connecting…</span>
+      <div class="topbar__actions">
+        <button type="button" class="btn-ghost" id="memory-btn" aria-controls="memory" aria-expanded="false" aria-label="Memory">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l2.5 2"/></svg>
+          <span class="btn-label">Memory</span>
+        </button>
+        <button type="button" class="btn-ghost" id="settings-btn" aria-haspopup="dialog" aria-label="Settings">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg>
+          <span class="btn-label">Settings</span>
+        </button>
+      </div>
+    </header>
+
+    <div class="banner" id="key-banner" role="status" hidden>
+      <p>No API key is set, so Askline cannot answer yet.</p>
+      <button type="button" class="btn" id="banner-settings-btn">Open settings</button>
+    </div>
+
+    <div class="shell" id="shell">
+      <aside class="sidebar" id="sidebar" aria-label="Threads">
+        <button type="button" class="btn-outline" id="new-chat-btn">New chat</button>
+        <h2 class="sidebar__title">Threads</h2>
+        <ul class="thread-list" id="thread-list"></ul>
+        <p class="sidebar__empty" id="threads-empty" hidden>No threads yet.</p>
+      </aside>
+
+      <main class="main" id="main" tabindex="-1">
+        <div class="notice" id="notice" role="alert" hidden></div>
+
+        <section class="transcript" id="transcript" aria-label="Conversation">
+          <div class="empty" id="empty">
+            <h1 class="empty__title">What should we look up?</h1>
+            <p class="empty__lede">Askline searches the web, cites what it finds, and remembers the questions you ask.</p>
+            <ul class="examples">
+              <li><button type="button" class="example">What changed in the latest Python release?</button></li>
+              <li><button type="button" class="example">Compare Postgres logical and physical replication</button></li>
+              <li><button type="button" class="example">Summarize this week's notable open-source security advisories</button></li>
+            </ul>
+          </div>
+          <div class="turns" id="turns"></div>
+        </section>
+
+        <form class="composer" id="composer">
+          <label class="sr-only" for="prompt">Ask a question</label>
+          <div class="composer__box">
+            <textarea id="prompt" rows="1" placeholder="Ask a question…"></textarea>
+            <button type="submit" class="send" id="send-btn" aria-label="Send question">
+              <span class="spinner" aria-hidden="true"></span>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
+            </button>
+          </div>
+          <p class="composer__hint">Enter sends · Shift+Enter adds a line</p>
+        </form>
+      </main>
+    </div>
+  </div>
+
+  <div class="scrim" id="scrim" hidden></div>
+
+  <aside class="drawer" id="memory" aria-labelledby="memory-title">
+    <header class="drawer__head">
+      <h2 id="memory-title" tabindex="-1">Memory</h2>
+      <button type="button" class="icon-btn" id="memory-close" aria-label="Close memory">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </header>
+    <p class="drawer__lede">Every question you have asked, by day. A record, not a chat.</p>
+    <div class="drawer__body" id="memory-body"></div>
+  </aside>
+
+  <dialog id="settings-dialog" aria-labelledby="settings-title">
+    <form class="settings" id="settings-form">
+      <h2 id="settings-title">Settings</h2>
+
+      <div class="field">
+        <label for="f-provider">Provider</label>
+        <select id="f-provider" name="provider">
+          <option value="openai">OpenAI</option>
+          <option value="anthropic">Anthropic</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label for="f-base-url">Base URL</label>
+        <input id="f-base-url" name="base_url" type="url" required autocomplete="off" spellcheck="false" placeholder="https://api.openai.com/v1">
+      </div>
+
+      <div class="field">
+        <label for="f-model">Model</label>
+        <input id="f-model" name="model" type="text" list="model-options" required autocomplete="off" spellcheck="false">
+        <datalist id="model-options"></datalist>
+        <p class="field__hint" id="model-hint" aria-live="off">Loading suggestions…</p>
+      </div>
+
+      <div class="field">
+        <label for="f-api-key">API key</label>
+        <input id="f-api-key" name="api_key" type="password" autocomplete="new-password" spellcheck="false" aria-describedby="key-hint">
+        <p class="field__hint" id="key-hint">Leave blank to keep the stored key.</p>
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label for="f-temp">Temperature</label>
+          <input id="f-temp" name="temperature" type="number" min="0" max="2" step="0.1" required>
+        </div>
+        <div class="field">
+          <label for="f-max">Max tokens</label>
+          <input id="f-max" name="max_tokens" type="number" min="1" step="1" required>
+        </div>
+      </div>
+
+      <p class="status" id="settings-status" aria-live="polite"></p>
+
+      <div class="dialog__actions">
+        <button type="button" class="btn-ghost" id="test-btn">Test connection</button>
+        <span class="spacer" aria-hidden="true"></span>
+        <button type="button" class="btn-ghost" id="cancel-btn">Cancel</button>
+        <button type="submit" class="btn" id="save-btn">Save</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>
