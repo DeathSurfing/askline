@@ -75,7 +75,9 @@ third search.
 
 Every turn has two switches, and both start on. **Visual** adds a generated card below the
 prose answer: a header, a short answer, a structured list or comparison table, optional
-chart, follow-up questions, and the sources. **Delegate** hands the research to a small
+chart, follow-up questions, and the sources. A chart comes from a series in the answer,
+or from a year-and-percentage table on a Wikipedia page when the answer only names two
+points. **Delegate** hands the research to a small
 tree of subagents before the answer is written. Turn both off for a single agent pass.
 The API defaults are off so existing clients keep the plain behaviour; the interface sends
 both as true.
@@ -321,7 +323,7 @@ The suite replaces the chat model with a scripted `BaseChatModel` and feeds the 
 engine an `httpx.MockTransport`, so routing, the two-round cap, source merging, citation
 filtering, SSE framing, persistence, caching, settings, and the memory block are exercised
 through the real application. Saved Bing and DuckDuckGo markup keeps the parser tests
-honest about page structure. The current suite has 76 tests.
+honest about page structure. The current suite has 84 tests.
 
 A live check still matters. Point the app at a real endpoint, ask a question that needs
 today's web, and confirm that the answer cites a page whose snippet supports it. Then ask
@@ -365,7 +367,8 @@ app/
   prompts.py    suggestions derived from recent questions, cached by ask count
   subagents.py  planner, research, design, and critique nodes, depth and node caps
   openui.py     JSON from the model, composed into an OpenUI Lang program
-  search.py     SearXNG and fallback parsers, relevance filter, cache
+  datatable.py  year and percentage series from a reference table
+  search.py     Wikipedia, SearXNG and fallback parsers, relevance filter, cache
   memory.py     SQLite schema, transcript, FTS5 recall, timeline
   citations.py  citation parsing and invalid marker removal
   schemas.py    shared records
@@ -380,7 +383,10 @@ searxng/        search service configuration
 Search runs a chain: Wikipedia for reference questions, then SearXNG, Bing, DuckDuckGo,
 and Mojeek, with a ten-minute SQLite cache. Wikipedia goes first when the question does not
 ask for something current, because its API is stable and its extracts carry the figures a
-reference answer needs. SearXNG is the path built for stability, but its upstream engines
+reference answer needs. When a dashboard question only needs the numbers, `datatable.py`
+searches Wikipedia for the reference page directly and reads its year table, even if the
+delegated results missed that page. The chart is only drawn from values that appear in a
+real table. SearXNG is the path built for stability, but its upstream engines
 rate-limit, so the scraped parsers remain as fallbacks. Those parsers are best-effort and
 will need occasional attention when a page changes.
 

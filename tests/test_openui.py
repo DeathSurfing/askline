@@ -248,3 +248,19 @@ def test_extract_series_reads_year_and_percentage():
 
 def test_extract_series_needs_three_points():
     assert extract_series("Turnout was 65.3% in 2024.") is None
+
+
+def test_line_chart_uses_the_library_argument_count():
+    from app.openui import build_lang
+
+    data = {
+        "title": "Turnout",
+        "subtitle": "By year",
+        "answer": "Turnout rose over the period [1].",
+        "items": [{"label": "A", "text": "One."}, {"label": "B", "text": "Two."}],
+        "followups": ["Q1?", "Q2?"],
+        "chart": {"kind": "line", "title": "Turnout", "labels": ["2000", "2004", "2008"], "values": [50.1, 55.2, 58.3], "unit": "%"},
+    }
+    line = next(item for item in build_lang(data, "summary", []).splitlines() if item.startswith("chart = LineChart"))
+    assert '"grouped"' not in line
+    assert line.endswith('"%" )'.replace(" )", ")"))

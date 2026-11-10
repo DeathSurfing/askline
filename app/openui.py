@@ -20,6 +20,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from .citations import strip_invalid
 from .config import ChatConfig, is_bundled
+from .datatable import series_for_question
 from .llm import build_chat_model, chunk_text
 from .memory import Store
 from .search import SearchEngine, Source
@@ -260,11 +261,11 @@ def chart_lang(chart: dict[str, Any]) -> list[str]:
             for index, (label, value) in enumerate(zip(chart["labels"], chart["values"]), 1)
         ]
         return lines
-    component = "BarChart" if chart["kind"] == "bar" else "LineChart"
-    return [
-        f"chart = {component}([{labels}], [s1], \"grouped\", \"\", {quote(chart['unit'])})",
-        f"s1 = Series({quote(chart['title'])}, [{values}])",
-    ]
+    if chart["kind"] == "bar":
+        call = f"chart = BarChart([{labels}], [s1], \"grouped\", \"\", {quote(chart['unit'])})"
+    else:
+        call = f"chart = LineChart([{labels}], [s1], \"\", {quote(chart['unit'])})"
+    return [call, f"s1 = Series({quote(chart['title'])}, [{values}])"]
 
 
 def build_lang(data: dict[str, Any], layout: str, sources: list[Source]) -> str:
@@ -349,6 +350,8 @@ async def generate_ui(store: Store, engine: SearchEngine, cfg: ChatConfig, quest
         try:
             text = await asyncio.wait_for(complete(cfg, messages), timeout=TIMEOUT + 15)
             data = normalize(parse_json(text), layout, sources)
+            if not data.get("chart"):
+                data["chart"] = await series_for_question(question, sources)
             return {
                 "lang": build_lang(data, layout, sources),
                 "layout": layout,
@@ -425,6 +428,8 @@ async def compose_ui(
     if data is None:
         layout = "summary"
         data = fallback_data(question, answer)
+    if not data.get("chart"):
+        data["chart"] = await series_for_question(question, sources)
     return {
         "lang": build_lang(data, layout, sources),
         "layout": layout,

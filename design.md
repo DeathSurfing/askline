@@ -372,8 +372,11 @@ answer, items, two follow-ups, and an optional chart. llama.cpp enforces the sch
 program with the shadcn library's positional signatures: `CardHeader`, `MarkDownRenderer`,
 `Table`, `BarChart` or `LineChart` with `Series`, `FollowUpBlock`, and `Card`. A prose
 answer that already names a year and a percentage per year can also become a line chart
-through `extract_series`, so a dashboard request degrades to a real chart when the model
-supplies the numbers.
+through `extract_series`. When the answer has only two points, `app/datatable.py` searches
+Wikipedia for the reference page and reads the first table with a year column and a
+percentage column. That fallback runs after composition, so a dashboard request can draw a
+real chart even when delegated search missed the reference page. Values come only from the
+table; the model never writes them.
 
 The card has no `sources` argument because the shadcn `Card` accepts only children. The
 browser renders the source chips from the same numbered list the answer cites, so the

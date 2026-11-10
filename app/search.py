@@ -18,6 +18,7 @@ USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
+WIKI_AGENT = "Askline/1.0 (https://github.com/DeathSurfing/askline)"
 CACHE_TTL = timedelta(minutes=10)
 _WORD = re.compile(r"[a-z0-9][a-z0-9+#.-]*")
 GENERIC = frozenset(
@@ -204,6 +205,19 @@ def parse_wikipedia(payload: dict, extract: str = "") -> list[Source]:
     return results
 
 
+def search_terms(query: str) -> str:
+    """Strip request framing so a reference search sees the subject."""
+    query = re.sub(r"(?i)\b(turn\s*out)\b", "turnout", query)
+    query = re.sub(r"(?i)\b(U\.?S\.?A?\.?|America)\b", "United States", query)
+    query = re.sub(
+        r"(?i)^(please\s+)?(create|build|make|design|generate|give me|show me)\s+"
+        r"(a\s+)?(dashboard|report|summary|chart|graph)\s+(on|about|for|of)\s+",
+        "",
+        query,
+    )
+    return " ".join(query.split())
+
+
 def wants_current(query: str) -> bool:
     return bool(re.search(r"(?i)\b(latest|current|today|news|price|release|version|now|2026)\b", query))
 
@@ -280,7 +294,8 @@ class SearchEngine:
             async def wikipedia() -> list[Source]:
                 response = await client.get(
                     "https://en.wikipedia.org/w/api.php",
-                    params={"action": "query", "list": "search", "srsearch": query, "format": "json", "srlimit": count},
+                    params={"action": "query", "list": "search", "srsearch": search_terms(query), "format": "json", "srlimit": count},
+                    headers={"User-Agent": WIKI_AGENT, "Accept": "application/json"},
                 )
                 if response.status_code >= 400:
                     return []
@@ -298,6 +313,7 @@ class SearchEngine:
                             "format": "json",
                             "redirects": "1",
                         },
+                        headers={"User-Agent": WIKI_AGENT, "Accept": "application/json"},
                     )
                     if detail.status_code < 400:
                         blocks = detail.json().get("query", {}).get("pages", {})
