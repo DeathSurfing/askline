@@ -1,4 +1,40 @@
 services:
+  llm:
+    image: ${LLM_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}
+    container_name: askline-llm
+    ports:
+      - "127.0.0.1:${LLM_PORT:-8080}:8080"
+    volumes:
+      - llm-cache:/root/.cache
+    environment:
+      HF_HOME: /root/.cache/huggingface
+    command:
+      - "--hf-repo"
+      - "${LLM_REPO:-LiquidAI/LFM3-1.7B-GGUF}"
+      - "--hf-file"
+      - "${LLM_FILE:-LFM3-1.7B-Q8_0.gguf}"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8080"
+      - "--ctx-size"
+      - "${LLM_CTX:-8192}"
+      - "--cache-type-k"
+      - "q8_0"
+      - "--cache-type-v"
+      - "q8_0"
+      - "--reasoning"
+      - "auto"
+      - "--alias"
+      - "${LLM_MODEL:-lfm3-1.7b}"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+    restart: unless-stopped
+
   searxng:
     image: docker.io/searxng/searxng:latest
     container_name: askline-search
@@ -15,6 +51,7 @@ services:
     image: askline:local
     container_name: askline
     depends_on:
+      - llm
       - searxng
     ports:
       - "${PORT:-8000}:8000"
@@ -23,9 +60,9 @@ services:
     environment:
       DATA_DIR: /data
       LLM_PROVIDER: ${LLM_PROVIDER:-openai}
-      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
-      LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
-      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://llm:8080/v1}
+      LLM_MODEL: ${LLM_MODEL:-lfm3-1.7b}
+      LLM_API_KEY: ${LLM_API_KEY:-local}
       LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0.2}
       LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-800}
       AGENT_TZ: ${AGENT_TZ:-local}
@@ -36,3 +73,4 @@ services:
 
 volumes:
   askline-data:
+  llm-cache:

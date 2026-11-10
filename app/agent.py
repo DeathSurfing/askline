@@ -10,8 +10,8 @@ from zoneinfo import ZoneInfo
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from .citations import cited_indices, strip_invalid
-from .config import ChatConfig, timezone_name
-from .graph import _parse_tool_payload, build_graph, system_prompt
+from .config import ChatConfig, is_bundled, timezone_name
+from .graph import _parse_tool_payload, build_graph, has_tool_markup, system_prompt
 from .llm import build_chat_model, chunk_text
 from .memory import Store, format_time
 from .schemas import Source
@@ -42,6 +42,19 @@ def _from_agent(metadata: dict) -> bool:
     if metadata.get("langgraph_node"):
         return metadata["langgraph_node"] == "agent"
     return "agent" in (metadata.get("tags") or [])
+
+
+def _strip_stream_markup(buffer: str) -> tuple[str, str]:
+    """Hide tool calls a model writes as text, and keep the unfinished tail buffered."""
+    if len(buffer) < len("<tool_call>") and "<tool_call>".startswith(buffer):
+        return "", buffer
+    out = ""
+    while buffer.startswith("<tool_call>"):
+        end = buffer.find("</tool_call>")
+        if end == -1:
+            return out, buffer
+        buffer = buffer[end + len("</tool_call>") :]
+    return out + buffer, ""
 
 
 def _merge_sources(existing: list[dict], incoming: list[dict]) -> list[dict]:
@@ -97,7 +110,13 @@ async def stream_turn(
             },
         )
 
-    graph = build_graph(build_chat_model(cfg), engine)
+    model = build_chat_model(cfg)
+    closer = (
+        build_chat_model(cfg, extra_body={"chat_template_kwargs": {"enable_thinking": False}})
+        if is_bundled(cfg)
+        else None
+    )
+    graph = build_graph(model, engine, closer=closer)
     state = {
         "messages": _history(store, thread_id),
         "system": system_prompt(memory_block, now, zone_label),
@@ -109,18 +128,34 @@ async def stream_turn(
     tokens: list[str] = []
     sources: list[dict] = []
     fallback = ""
+    markup_buffer = ""
+    first_token_at: float | None = None
+    last_stats_at = 0.0
+    token_count = 0
 
     async def consume() -> AsyncIterator[tuple[str, dict]]:
-        nonlocal fallback
+        nonlocal fallback, first_token_at, last_stats_at, token_count, markup_buffer
         async for mode, payload in graph.astream(state, stream_mode=["messages", "updates"]):
             if mode == "messages":
                 chunk, metadata = payload
                 if not _from_agent(metadata):
                     continue
-                delta = chunk_text(chunk)
+                delta, markup_buffer = _strip_stream_markup(markup_buffer + chunk_text(chunk))
                 if delta:
                     tokens.append(delta)
+                    token_count += 1
+                    now_mono = time.perf_counter()
+                    if first_token_at is None:
+                        first_token_at = now_mono
                     yield "token", {"delta": delta}
+                    elapsed = now_mono - first_token_at
+                    if elapsed >= 0.25 and now_mono - last_stats_at >= 0.25:
+                        last_stats_at = now_mono
+                        yield "stats", {
+                            "tokens": token_count,
+                            "seconds": round(elapsed, 2),
+                            "tok_per_s": round(token_count / elapsed, 1) if elapsed > 0 else 0.0,
+                        }
                 continue
 
             for node, update in payload.items():
@@ -128,10 +163,18 @@ async def stream_turn(
                     continue
                 if node == "agent":
                     last = (update.get("messages") or [None])[-1]
-                    for call in getattr(last, "tool_calls", None) or []:
+                    calls = getattr(last, "tool_calls", None) or []
+                    for call in calls:
                         yield "search_start", {"query": (call.get("args") or {}).get("query", "")}
                     text = chunk_text(last) if last else ""
-                    if text:
+                    if (calls or has_tool_markup(text)) and tokens:
+                        tokens.clear()
+                        fallback = ""
+                        token_count = 0
+                        first_token_at = None
+                        last_stats_at = 0.0
+                        yield "reset", {}
+                    elif text and not has_tool_markup(text):
                         fallback = text
                 elif node == "tools":
                     for message in update.get("messages") or []:
@@ -161,12 +204,14 @@ async def stream_turn(
         yield "error", {"message": f"{type(exc).__name__}: {exc}"}
         return
 
-    text = "".join(tokens) or fallback
+    text = (fallback or "".join(tokens)).strip()
     if not text.strip():
         yield "error", {"message": "The model returned an empty answer. Try again or switch models."}
         return
     text = strip_invalid(text, len(sources)).strip()
     cited = cited_indices(text, len(sources))
+    generation_seconds = (time.perf_counter() - first_token_at) if first_token_at else 0.0
+    rate = round(token_count / generation_seconds, 1) if generation_seconds > 0 else 0.0
     message = store.add_turn(
         thread_id, "assistant", text, [Source.from_dict(item) for item in sources]
     )
@@ -178,6 +223,8 @@ async def stream_turn(
             "sources": sources,
             "cited": cited,
             "elapsed_ms": int((time.perf_counter() - started) * 1000),
+            "tokens": token_count,
+            "tok_per_s": rate,
         },
     )
 

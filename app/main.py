@@ -15,6 +15,7 @@ from .agent import sse, stream_turn
 from .config import ChatConfig, db_path, load_config, save_overrides
 from .llm import list_models, test_connection
 from .memory import Store
+from .prompts import suggested_prompts
 from .search import SearchEngine
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -140,6 +141,14 @@ async def models(request: Request):
     with store(request).connection() as conn:
         cfg = load_config(conn)
     return await list_models(cfg)
+
+
+@app.get("/api/prompts")
+async def prompts(request: Request):
+    with store(request).connection() as conn:
+        cfg = load_config(conn)
+    items, source = await suggested_prompts(store(request), cfg)
+    return {"prompts": items, "source": source}
 
 
 @app.get("/api/threads")

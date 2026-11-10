@@ -11,7 +11,7 @@ from langchain_openai import ChatOpenAI
 from .config import ChatConfig
 
 
-def build_chat_model(cfg: ChatConfig) -> BaseChatModel:
+def build_chat_model(cfg: ChatConfig, extra_body: dict | None = None) -> BaseChatModel:
     if not cfg.api_key:
         raise RuntimeError("No API key configured. Open Settings and add one, or set LLM_API_KEY.")
     if cfg.provider == "anthropic":
@@ -32,6 +32,7 @@ def build_chat_model(cfg: ChatConfig) -> BaseChatModel:
         max_tokens=cfg.max_tokens,
         timeout=60,
         max_retries=1,
+        extra_body=extra_body,
     )
 
 

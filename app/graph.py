@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from datetime import datetime
 from typing import Annotated, Any, TypedDict
 
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, AnyMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
@@ -15,6 +17,53 @@ from pydantic import BaseModel, Field
 from .search import SearchEngine
 
 MAX_SEARCH_ROUNDS = 2
+
+_MARKUP_CALL = re.compile(
+    r"<tool_call>\s*<function=([\w.-]+)>(.*?)</function>\s*</tool_call>", re.DOTALL
+)
+_MARKUP_PARAM = re.compile(r"<parameter=([\w.-]+)>\s*(.*?)\s*</parameter>", re.DOTALL)
+
+
+def has_tool_markup(text: str | None) -> bool:
+    return bool(text and "<tool_call>" in text)
+
+
+def parse_markup_tool_call(text: str | None) -> dict | None:
+    """Read the tool call a small model wrote as text instead of a structured call."""
+    match = _MARKUP_CALL.search(text or "")
+    if not match or match.group(1).strip() != "web_search":
+        return None
+    params = {key.strip(): value.strip() for key, value in _MARKUP_PARAM.findall(match.group(2))}
+    query = params.get("query", "").strip()
+    if not query:
+        return None
+    digest = hashlib.md5(query.encode()).hexdigest()[:8]
+    return {"name": "web_search", "args": {"query": query}, "id": f"call_{digest}", "type": "tool_call"}
+
+
+def strip_tool_markup(text: str | None) -> str:
+    return _MARKUP_CALL.sub("", text or "").strip()
+
+
+def closing_prompt(question: str, sources: list[dict]) -> str:
+    lines = [f"Question: {question}", "", "Search results:"]
+    for source in sources[:5]:
+        snippet = str(source.get("snippet") or "").strip()[:300]
+        title = source.get("title") or source.get("url") or "source"
+        lines.append(f"[{source.get('index', '')}] {title}: {snippet}")
+    lines += ["", "Answer in three to six sentences using only these results. Cite claims as [n]."]
+    return "\n".join(lines)
+
+
+def results_summary(sources: list[dict]) -> str:
+    if not sources:
+        return "I could not reach a clear answer. Try asking again."
+    lines = ["Here is what the search found."]
+    for source in sources[:3]:
+        snippet = str(source.get("snippet") or "").strip()
+        title = source.get("title") or source.get("url") or "source"
+        lines.append(f"[{source.get('index', '')}] {title}" + (f": {snippet}" if snippet else ""))
+    return "\n".join(lines)
 
 
 class AgentState(TypedDict):
@@ -40,9 +89,11 @@ def system_prompt(memory_block: str, now: datetime, zone_label: str) -> str:
         "How to work:",
         "1. Lead with the answer in the first sentence. Then give the few facts that support it.",
         "2. Search when the question depends on current events, prices, releases, schedules, people, "
-        "or any fact you are not certain about. Search once; search again only if the first results "
-        "miss the question or contradict each other. Write the query with the distinctive words only: "
-        "names, products, versions. Drop filler like latest, news, and best, and drop question words.",
+        "or any fact you are not certain about. A version number, release date, price, or schedule is "
+        "never something you know from memory, so always search for it. Search once; search again only "
+        "if the first results miss the question or contradict each other. Write the query with the "
+        "distinctive words only: names, products, versions. Drop filler like latest, news, and best, "
+        "and drop question words.",
         "3. Use what the results say, not your memory of the topic, whenever you searched. "
         "Cite each claim taken from a result with its number in square brackets, like [1] or [2][3]. "
         "Never cite a number that is not in the results and never invent a URL.",
@@ -76,7 +127,12 @@ def _parse_tool_payload(content: Any) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def build_graph(model: BaseChatModel, engine: SearchEngine, max_rounds: int = MAX_SEARCH_ROUNDS):
+def build_graph(
+    model: BaseChatModel,
+    engine: SearchEngine,
+    max_rounds: int = MAX_SEARCH_ROUNDS,
+    closer: BaseChatModel | None = None,
+):
     async def run_search(query: str) -> str:
         outcome = await engine.search(query)
         return json.dumps(outcome.to_dict(), ensure_ascii=False)
@@ -91,15 +147,43 @@ def build_graph(model: BaseChatModel, engine: SearchEngine, max_rounds: int = MA
         args_schema=SearchArgs,
     )
     bound = model.bind_tools([tool])
+    plain = closer or model
     tool_node = ToolNode([tool])
 
     async def agent(state: AgentState) -> dict:
+        rounds = state.get("rounds", 0)
         messages = [SystemMessage(content=state["system"]), *state["messages"]]
-        if state.get("rounds", 0) >= max_rounds:
-            response = await model.ainvoke(messages)
+        if rounds >= max_rounds:
+            response = await plain.ainvoke(messages)
+            text = response.content if isinstance(response.content, str) else ""
+            if not text.strip() and not getattr(response, "tool_calls", None):
+                return {"messages": [AIMessage(content=results_summary(state.get("sources") or []))]}
         else:
             response = await bound.ainvoke(messages)
-        return {"messages": [response]}
+            text = response.content if isinstance(response.content, str) else ""
+        structured = bool(getattr(response, "tool_calls", None))
+        markup = has_tool_markup(text)
+        if structured and rounds < max_rounds:
+            return {"messages": [response]}
+        if not structured and markup:
+            leaked = parse_markup_tool_call(text)
+            if leaked and rounds == 0:
+                return {"messages": [AIMessage(content="", tool_calls=[leaked])]}
+        if not structured and not markup:
+            return {"messages": [response]}
+
+        question = next(
+            (str(message.content) for message in reversed(state["messages"]) if isinstance(message, HumanMessage)),
+            "Answer the question.",
+        )
+        retry = await plain.ainvoke(
+            [HumanMessage(content=closing_prompt(question, state.get("sources") or []))]
+        )
+        retry_text = retry.content if isinstance(retry.content, str) else ""
+        answer = strip_tool_markup(retry_text) if not getattr(retry, "tool_calls", None) else ""
+        if not answer.strip():
+            answer = results_summary(state.get("sources") or [])
+        return {"messages": [AIMessage(content=answer)]}
 
     def collect(state: AgentState) -> dict:
         sources = list(state.get("sources") or [])

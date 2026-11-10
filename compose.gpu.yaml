@@ -1,0 +1,13 @@
+# GPU override for hosts with an NVIDIA GPU and driver libraries on disk.
+# run.sh adds this file automatically when /dev/nvidia0 exists and it can find
+# libcuda.so.1. Set NVIDIA_LIBS to the directory that holds the driver libs.
+services:
+  llm:
+    devices:
+      - /dev/nvidia0
+      - /dev/nvidiactl
+      - /dev/nvidia-uvm
+    volumes:
+      - ${NVIDIA_LIBS:-/opt/nvidia-libs}:/usr/local/nvidia/lib64:ro
+    environment:
+      LD_LIBRARY_PATH: /usr/local/nvidia/lib64

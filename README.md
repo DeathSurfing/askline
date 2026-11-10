@@ -131,23 +131,29 @@ running machine; `podman machine start` is enough.
 
 ```sh
 cp .env.example .env
-# set LLM_API_KEY and LLM_MODEL in .env
 ./run.sh up
 ```
 
-`run.sh` builds the image, starts the app and SearXNG, waits for the health endpoint, and
-prints the address. Open <http://localhost:8000>. `./run.sh open` opens it for you on
-macOS or a desktop Linux session.
+`run.sh` builds the image, starts the app, SearXNG, and a llama.cpp server, downloads
+`LiquidAI/LFM3-1.7B-GGUF` into a volume on the first start, waits for the health endpoint,
+and prints the address. That download happens once, so the first start takes longer than
+the rest. Open <http://localhost:8000>. `./run.sh open` opens it for you on macOS or
+a desktop Linux session.
+
+When the host exposes `/dev/nvidia0` and the driver libraries in `/opt/nvidia-libs`,
+`run.sh` also adds `compose.gpu.yaml` and starts the CUDA build of llama.cpp. Without
+those, the same command runs on the CPU. The GPU path was measured on an RTX 3070 laptop
+GPU, where LFM3 answered a sixty-word question in about ten seconds, most of it reasoning
+before the first visible token.
 
 To stop the stack, run `./run.sh down`. Logs are available with `./run.sh logs`.
 
 ### Run it on another machine
 
-Copy the checkout to the host and run the same command there. The only value that must
-change is `LLM_BASE_URL`: it has to be an address the host can reach, not `localhost`,
-because the model endpoint is called from inside the container. A model on your laptop is
-reachable at the laptop's LAN address, for example
-`http://192.168.1.32:11434/v1` for Ollama, provided Ollama listens beyond loopback.
+Copy the checkout to the host and run the same command there. The bundled model makes
+this self-contained: the host pulls the GGUF, starts llama.cpp beside the app, and needs
+no endpoint on your laptop. Copy `.env` too and set `AGENT_TZ` to the server's zone so the
+memory timestamps match the clock you read.
 
 ```sh
 tar czf - --exclude .venv --exclude data --exclude .env . \
@@ -174,6 +180,7 @@ Anthropic messages API. Pick one of the following and put the values in `.env`.
 | OpenAI | `openai` | `https://api.openai.com/v1` | Default base URL |
 | Anthropic | `anthropic` | `https://api.anthropic.com` | Default model `claude-sonnet-4-5` |
 | OpenRouter | `openai` | `https://openrouter.ai/api/v1` | Any routed model id |
+| llama.cpp | `openai` | `http://llm:8080/v1` | The bundled container |
 | Ollama on the host | `openai` | `http://host.docker.internal:11434/v1` | Any API key value; the model must support tools |
 | Ollama on Linux | `openai` | Host LAN address, port 11434 | `host.docker.internal` is not automatic on Linux |
 
@@ -185,12 +192,16 @@ later turns. The API key stays masked when read back.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
+| `LLM_REPO` | `LiquidAI/LFM3-1.7B-GGUF` | Hugging Face repo the model container downloads |
+| `LLM_FILE` | `LFM3-1.7B-Q8_0.gguf` | Quantization inside that repo |
+| `LLM_PORT` | `8080` | Host port for the model server |
+| `LLM_CTX` | `8192` | Context window for the model server |
 | `LLM_PROVIDER` | `openai` | `openai` or `anthropic` |
 | `LLM_BASE_URL` | provider default | Compatible endpoint root |
 | `LLM_MODEL` | provider default | Model id sent to the endpoint |
-| `LLM_API_KEY` | empty | Required before chat works |
+| `LLM_API_KEY` | empty | Required for external endpoints; the bundled server ignores it |
 | `LLM_TEMPERATURE` | `0.2` | Sampling temperature |
-| `LLM_MAX_TOKENS` | `800` | Answer ceiling |
+| `LLM_MAX_TOKENS` | `800` | Answer ceiling, including reasoning tokens |
 | `AGENT_TZ` | `local` | Fallback IANA zone for API clients |
 | `DATA_DIR` | `./data` | Directory holding `chat.db` |
 | `SEARXNG_URL` | empty | Enables the SearXNG path when set |
@@ -211,6 +222,7 @@ cold copy of the directory is safer than copying the file under load.
 | `POST /api/settings` | Save provider, endpoint, model, sampling, and optionally a key |
 | `POST /api/settings/test` | One completion against submitted or stored settings |
 | `GET /api/models` | Model ids from the endpoint's model list |
+| `GET /api/prompts` | Three suggested questions from the user's recent history |
 | `GET /api/threads` | Thread list with turn counts |
 | `POST /api/threads` | New thread |
 | `GET /api/threads/{id}` | Thread and full turn history with sources |
@@ -228,7 +240,9 @@ response is `text/event-stream` with these events.
 | `search_start` | The query sent to search |
 | `search` | Numbered results, backend, cache flag, error |
 | `token` | One text delta |
-| `done` | Final text, sources, cited numbers, elapsed milliseconds |
+| `stats` | Running `tokens`, `seconds`, and `tok_per_s`, emitted at most every 250 ms |
+| `reset` | Clear the streamed text because the model broke its answer |
+| `done` | Final text, sources, cited numbers, elapsed milliseconds, tokens, tok/s |
 | `error` | A message for the interface |
 
 The turn is stored only after `done`. A disconnected stream leaves the user question in
@@ -254,7 +268,7 @@ The suite replaces the chat model with a scripted `BaseChatModel` and feeds the 
 engine an `httpx.MockTransport`, so routing, the two-round cap, source merging, citation
 filtering, SSE framing, persistence, caching, settings, and the memory block are exercised
 through the real application. Saved Bing and DuckDuckGo markup keeps the parser tests
-honest about page structure. The current suite has 37 tests.
+honest about page structure. The current suite has 51 tests.
 
 A live check still matters. Point the app at a real endpoint, ask a question that needs
 today's web, and confirm that the answer cites a page whose snippet supports it. Then ask
@@ -263,22 +277,24 @@ clock.
 
 ## Measured behaviour
 
-These numbers come from the development machine, a local `gemma4:e2b` endpoint, and the
-SearXNG container. The model is small and slow; the app's own stages are the first two
-rows.
+These numbers come from the deployment host, a llama.cpp server on an RTX 3070 laptop
+GPU, LFM3 1.7B Q8, and the SearXNG container. The turn was "What changed in the latest
+Python release?".
 
 | Stage | Time |
 | --- | --- |
-| SSE headers and `meta` | 0.18 s |
-| SearXNG search, six results | 2.4 s |
-| Model decides to call the tool | 10.0 s |
-| First token | 23.2 s |
-| Turn complete | 25.1 s |
+| SSE headers and `meta` | 0.02 s |
+| Model decides to call the tool | 1.7 s |
+| Search results, cached | 1.7 s |
+| First visible token | 8.6 s |
+| Turn complete | 9.9 s |
+| Generation rate | 134 tok/s |
 
-The app controls one search in the common case, a two-round cap, a ten-minute cache, and
-a stream that starts before model work. The model endpoint accounts for most of the
-measured latency. A hosted endpoint should reduce it, but that is an expectation rather
-than a measurement from this machine.
+The reasoning phase comes before the first visible token and is not streamed, so most of
+the wait is reasoning rather than answer text. Once the answer starts, it arrives at
+roughly 134 tok/s. The earlier Ollama path managed 3.7 tok/s on the same GPU, and a
+120-token llama.cpp completion measured 165 tok/s at 1785 MHz and 56 W. That gap is why
+the stack moved to llama.cpp.
 
 The deployment path was verified with Podman and its Compose provider. `./run.sh up`
 built the image, started both containers, passed the health check, served the interface,
@@ -293,6 +309,7 @@ app/
   agent.py      turn orchestration and event stream
   graph.py      LangGraph state machine, prompt, tool binding
   llm.py        provider factory, connection test, model list
+  prompts.py    suggestions derived from recent questions, cached by ask count
   search.py     SearXNG and fallback parsers, relevance filter, cache
   memory.py     SQLite schema, transcript, FTS5 recall, timeline
   citations.py  citation parsing and invalid marker removal

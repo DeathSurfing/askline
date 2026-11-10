@@ -15,7 +15,7 @@
     settingsBtn: $('settings-btn'), memoryBtn: $('memory-btn'), memory: $('memory'),
     memoryTitle: $('memory-title'), memoryClose: $('memory-close'), memoryBody: $('memory-body'),
     shell: $('shell'), scrim: $('scrim'), notice: $('notice'), transcript: $('transcript'),
-    empty: $('empty'), turns: $('turns'), composer: $('composer'), prompt: $('prompt'), send: $('send-btn'),
+    empty: $('empty'), examples: $('examples'), turns: $('turns'), composer: $('composer'), prompt: $('prompt'), send: $('send-btn'),
     dialog: $('settings-dialog'), form: $('settings-form'), dialogStatus: $('settings-status'),
     test: $('test-btn'), save: $('save-btn'), cancel: $('cancel-btn'),
     modelHint: $('model-hint'), modelOptions: $('model-options'),
@@ -222,6 +222,7 @@
     view.body = h('div', { class: 'turn__body' });
     view.sourceList = h('ul', { class: 'sources', 'aria-label': 'Sources', hidden: true });
     view.elapsed = h('span', { class: 'turn__elapsed' });
+    view.rate = h('span', { class: 'turn__rate', hidden: true });
     view.copy = h('button', {
       type: 'button',
       class: 'btn-ghost btn-small',
@@ -235,7 +236,7 @@
       view.status,
       view.body,
       view.sourceList,
-      h('footer', { class: 'turn__foot' }, [h('time', { class: 'turn__time', datetime: iso, text: stamp(iso) }), view.elapsed, view.copy]),
+      h('footer', { class: 'turn__foot' }, [h('time', { class: 'turn__time', datetime: iso, text: stamp(iso) }), view.elapsed, view.rate, view.copy]),
     ]);
     return view;
   }
@@ -290,7 +291,7 @@
   }
 
   // Shared by a live "done" event and a stored turn when a thread reopens.
-  function completeView(view, { text, sources, cited, elapsed_ms: elapsedMs }) {
+  function completeView(view, { text, sources, cited, elapsed_ms: elapsedMs, tok_per_s: tokPerS }) {
     cancelAnimationFrame(view.frame);
     view.frame = 0;
     view.text = text || view.text;
@@ -301,6 +302,10 @@
     if (!view.text.trim()) view.body.replaceChildren(h('p', { class: 'field__hint', text: 'The model returned no text.' }));
     renderSources(view);
     if (Number.isFinite(elapsedMs)) view.elapsed.textContent = formatElapsed(elapsedMs);
+    if (Number.isFinite(tokPerS) && tokPerS > 0) {
+      view.rate.textContent = `${tokPerS.toFixed(1)} tok/s`;
+      view.rate.hidden = false;
+    }
     view.copy.hidden = false;
     view.article.setAttribute('aria-busy', 'false');
   }
@@ -382,6 +387,17 @@
         clearProgress(view);
         view.text += data.delta ?? '';
         queueRender(view);
+        return false;
+      case 'reset':
+        view.text = '';
+        view.rate.hidden = true;
+        renderAnswer(view);
+        return false;
+      case 'stats':
+        if (Number.isFinite(data.tok_per_s) && data.tok_per_s > 0) {
+          view.rate.textContent = `${data.tok_per_s.toFixed(1)} tok/s`;
+          view.rate.hidden = false;
+        }
         return false;
       case 'done':
         completeView(view, data);
@@ -534,9 +550,32 @@
       const thread = await api('/api/threads', { method: 'POST' });
       await refreshThreads();
       await openThread(thread.id);
+      loadPrompts();
       els.prompt.focus();
     } catch (error) {
       notify(`Couldn't start a chat: ${error.message}`);
+    }
+  }
+
+  function renderExamples(prompts) {
+    if (!els.examples || !prompts.length) return;
+    els.examples.replaceChildren(
+      ...prompts.slice(0, 3).map((text) => {
+        const button = h('button', { type: 'button', class: 'example' }, text);
+        button.addEventListener('click', () => sendMessage(text));
+        const item = document.createElement('li');
+        item.append(button);
+        return item;
+      })
+    );
+  }
+
+  async function loadPrompts() {
+    try {
+      const { prompts } = await api('/api/prompts');
+      renderExamples(prompts || []);
+    } catch {
+      // The static examples stay when suggestions are unavailable.
     }
   }
 
@@ -809,9 +848,6 @@
     els.prompt.addEventListener('input', resizePrompt);
     els.prompt.addEventListener('keydown', onPromptKey);
     els.composer.addEventListener('submit', onSubmit);
-    document.querySelectorAll('.example').forEach((btn) => {
-      btn.addEventListener('click', () => sendMessage(btn.textContent.trim()));
-    });
 
     els.form.addEventListener('submit', saveSettings);
     els.test.addEventListener('click', testConnection);
@@ -827,6 +863,7 @@
 
     if (threads.status === 'fulfilled') renderThreads(threads.value.threads || []);
     else notify(`Couldn't load threads: ${threads.reason.message}`);
+    loadPrompts();
 
     if (!state.threads.length) {
       await newChat();

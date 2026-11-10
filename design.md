@@ -33,7 +33,8 @@ flowchart LR
     F --> G[LangGraph<br/>agent -> tools -> agent]
     G -->|web_search| S[SearXNG<br/>meta-search in compose]
     S -.->|blocked or empty| S2[Bing -> DDG -> Mojeek]
-    G -->|chat completions| L[LLM endpoint<br/>OpenAI or Anthropic compatible]
+    G -->|chat completions| L[llama.cpp server<br/>LFM3 1.7B on the GPU]
+    L -.->|any compatible endpoint| L2[OpenAI or Anthropic<br/>hosted model]
     F --> M[(SQLite<br/>turns + FTS5 + cache)]
     G --> M
     M -->|MEMORY block| G
@@ -194,6 +195,15 @@ Nodes are `agent`, `tools`, and `collect`. `collect` parses the tool message JSO
 The model is built per request from the effective settings. That is cheap, and it means
 a settings change applies to the next message without a restart.
 
+A small model sometimes keeps looking for a tool after the search budget is spent, or
+writes a tool call as plain text instead of a structured call. The graph handles both.
+`has_tool_markup` and `parse_markup_tool_call` recover a call written as text on the
+first round. At the cap, the agent node asks the model for an answer with a short closing
+prompt that has no tools in it, and `results_summary` is the fallback if even that reply
+is empty or still holds a call. The stream applies the same rule through
+`_strip_stream_markup`, so raw markup never reaches the interface. This is deliberately
+model-specific recovery, kept at the model boundary rather than spread through the UI.
+
 ## Provider abstraction
 
 `ChatConfig` is the single boundary. It resolves, in order: values saved from the
@@ -221,7 +231,9 @@ endpoint reports `has_api_key` only.
 | `search_start` | query | Show "Searching the web..." |
 | `search` | results, cached, backend, error | Render source chips |
 | `token` | delta | Append to the answer |
-| `done` | text, sources, cited, elapsed_ms | Finalise, show sources and timing |
+| `stats` | tokens, seconds, tok_per_s | Update the live rate, at most every 250 ms |
+| `reset` | (none) | Clear streamed text that the server replaced |
+| `done` | text, sources, cited, elapsed_ms, tokens, tok_per_s | Finalise, show sources and timing |
 | `error` | message | Inline error with retry |
 
 The stream is produced with `graph.astream(..., stream_mode=["messages", "updates"])`.
@@ -249,6 +261,7 @@ that invents `[7]` with six sources leaves no dead link behind.
 | Model endpoint down | SSE `error` event; the user turn stays in the log |
 | All search backends blocked | Tool returns an error payload; the model is told and can say what is unknown |
 | Model times out | 120 second turn timeout, then an SSE `error` |
+| Model writes a tool call as text | The graph parses it, or forces an answer; the stream hides the markup |
 | Model returns no text | SSE `error` names the empty answer, no assistant turn is stored |
 | Stream disconnects | The async generator closes; the turn is not stored unless `done` ran |
 | SQLite locked | Ten second busy timeout; each operation uses its own connection |
@@ -270,27 +283,46 @@ browser turn. Those are run manually and recorded in the README.
 
 ## Verification
 
-Measured on the development machine with a local `gemma4:e2b` endpoint (a small model,
-chosen because it was reachable), a browser-shaped chat request, and the SearXNG
-container. The model dominates the total; the app's own stages are the first row and the
-search round trip.
+Measured on the deployment host: a llama.cpp server on an RTX 3070 laptop GPU with LFM3
+1.7B Q8, SearXNG, and a browser-shaped chat request. The turn was "What changed in the
+latest Python release?".
 
 | Stage | Time |
 | --- | --- |
-| SSE headers and `meta` event | 0.18 s |
-| SearXNG search, six results | 2.4 s |
-| Model decision to call the tool | 10.0 s |
-| First streamed token | 23.2 s |
-| Complete turn, `done` event | 25.1 s |
+| SSE headers and `meta` event | 0.02 s |
+| Model decision to call the tool | 1.7 s |
+| Search results, cached | 1.7 s |
+| First streamed token | 8.6 s |
+| Complete turn, `done` event | 9.9 s |
+| Generation rate | 134 tok/s |
 
-The latency choices in the design are the ones the app controls: one search round in the
-common case, a two-round cap, a ten-minute result cache, and a stream that emits `meta`
-before any model work starts. A hosted model endpoint removes most of the measured time;
-that is an expectation, not a measurement.
+Most of the wait is the model's reasoning phase, which llama.cpp does not stream. The
+answer itself arrives quickly once it starts. The app's own stages stay small: `meta`
+goes out before any model work, the search is a container round trip, and the cache
+serves repeats.
+
+A separate measurement decided the runtime. On the same GPU, Ollama generated 3.7 tok/s
+for the same class of model, while a 120-token llama.cpp completion ran at 165 tok/s
+(1785 MHz, 56 W). The stack therefore runs llama.cpp directly with the NVIDIA devices
+and driver libraries mounted, and falls back to CPU when those are absent.
 
 The test suite covers the graph, parsers, cache, API, citations, and memory without a
 model or network. The container run is verified separately with `./run.sh up`, a health
 check, a SearXNG JSON request, and one real chat turn.
+
+## Suggested questions
+
+`GET /api/prompts` returns three questions for the empty state. It reads the user's last
+twenty questions, asks the model for three likely follow-ups, and falls back to the
+static defaults when there is too little history, the model is not configured, or the
+call fails within eight seconds. The result is cached in the `settings` table under the
+current ask count, so a new turn regenerates the suggestions and repeated page loads do
+not. The prompt asks for one line per question with no numbering; `parse_suggestions`
+still strips bullets and numbers because small models add them anyway.
+
+This keeps the home screen tied to the user's actual work without adding a second tool or
+a background job. The trade is one extra model call after the first turn, hidden behind a
+fallback.
 
 ## Rejected alternatives
 

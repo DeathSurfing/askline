@@ -316,6 +316,32 @@ class Store:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def ask_count(self) -> int:
+        with self.connection() as conn:
+            return int(conn.execute("SELECT COUNT(*) FROM asks").fetchone()[0])
+
+    def recent_questions(self, limit: int = 20) -> list[str]:
+        with self.connection() as conn:
+            rows = conn.execute(
+                "SELECT text FROM turns WHERE role = 'user' ORDER BY rowid DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [row["text"] for row in rows]
+
+    def setting(self, key: str) -> str | None:
+        with self.connection() as conn:
+            row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        return row["value"] if row else None
+
+    def save_setting(self, key: str, value: str) -> None:
+        with self.connection() as conn:
+            conn.execute(
+                "INSERT INTO settings(key, value) VALUES(?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, value),
+            )
+            conn.commit()
+
     # search cache ------------------------------------------------------------
 
     def cache_get(self, key: str) -> dict | None:

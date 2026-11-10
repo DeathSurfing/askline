@@ -118,3 +118,10 @@ def save_overrides(conn: sqlite3.Connection, values: dict[str, str]) -> None:
 
 def timezone_name() -> str:
     return _env("AGENT_TZ", "local")
+
+
+def is_bundled(cfg: ChatConfig) -> bool:
+    """True for the compose model server, which accepts chat_template_kwargs."""
+    from urllib.parse import urlparse
+
+    return (urlparse(cfg.base_url).hostname or "") == "llm"
