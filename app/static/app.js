@@ -56,7 +56,7 @@
   }
 
   const formatElapsed = (ms) =>
-    ms < 1000 ? `Answered in ${Math.round(ms)} ms` : `Answered in ${(ms / 1000).toFixed(1)} s`;
+    ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`;
 
   function hostOf(url) {
     try {
@@ -198,8 +198,9 @@
       onclick: (event) => {
         event.preventDefault();
         const node = document.getElementById(source.domId);
-        node?.focus({ preventScroll: true });
+        ctx.openSources();
         node?.scrollIntoView({ block: 'nearest', behavior: reducedQuery.matches ? 'auto' : 'smooth' });
+        node?.focus({ preventScroll: true });
       },
     })]);
   }
@@ -220,7 +221,7 @@
     view.recall = h('details', { class: 'recall', hidden: true });
     view.status = h('p', { class: 'turn__status', 'aria-live': 'polite', hidden: true });
     view.body = h('div', { class: 'turn__body' });
-    view.sourceList = h('ul', { class: 'sources', 'aria-label': 'Sources', hidden: true });
+    view.sourceList = h('details', { class: 'sources', hidden: true });
     view.elapsed = h('span', { class: 'turn__elapsed' });
     view.rate = h('span', { class: 'turn__rate', hidden: true });
     view.copy = h('button', {
@@ -251,7 +252,8 @@
 
   function renderAnswer(view) {
     const sources = new Map(view.sources.map((s) => [s.index, { domId: sourceId(view.uid, s.index) }]));
-    view.body.replaceChildren(...renderMarkdown(view.text, { sources }));
+    const openSources = () => { view.sourceList.open = true; };
+    view.body.replaceChildren(...renderMarkdown(view.text, { sources, openSources }));
   }
 
   function renderSources(view) {
@@ -266,14 +268,17 @@
         ]),
       ]);
     });
-    view.sourceList.replaceChildren(...items);
+    view.sourceList.replaceChildren(
+      h('summary', { text: `${items.length} ${items.length === 1 ? 'source' : 'sources'}` }),
+      h('ul', {}, items),
+    );
     view.sourceList.hidden = items.length === 0;
   }
 
   function showRecall(view, items) {
     if (!items.length) return;
     view.recall.replaceChildren(
-      h('summary', { text: `Drew on ${items.length} earlier ${items.length === 1 ? 'question' : 'questions'}` }),
+      h('summary', { text: `${items.length} earlier ${items.length === 1 ? 'question' : 'questions'}` }),
       h('ul', {}, items.map((item) => h('li', { text: `${item.text} · ${relTime(item.created_at)}` }))),
     );
     view.recall.hidden = false;
@@ -647,17 +652,15 @@
   function askNode(ask) {
     const title = ask.thread_title || 'Untitled thread';
     return h('li', { class: 'ask' }, [
-      h('div', { class: 'ask__meta' }, [
-        h('time', { class: 'ask__time', datetime: ask.created_at, text: clockFmt.format(new Date(ask.created_at)) }),
-        h('button', {
-          type: 'button',
-          class: 'link-btn',
-          'aria-label': `Open thread “${title}”`,
-          text: title,
-          onclick: () => openFromMemory(ask.thread_id),
-        }),
-      ]),
-      h('p', { class: 'ask__text', text: ask.text }),
+      h('time', { class: 'ask__time', datetime: ask.created_at, text: clockFmt.format(new Date(ask.created_at)) }),
+      h('button', {
+        type: 'button',
+        class: 'link-btn ask__text',
+        title,
+        'aria-label': `Open thread “${title}”`,
+        text: ask.text,
+        onclick: () => openFromMemory(ask.thread_id),
+      }),
     ]);
   }
 
@@ -730,7 +733,6 @@
 
   function applyHealth(health) {
     els.model.textContent = `${health.provider} · ${health.model}`;
-    els.model.title = `Search backend: ${health.search_backend || 'none'}`;
     els.banner.hidden = health.has_api_key !== false;
   }
 
