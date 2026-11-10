@@ -4,7 +4,6 @@ from datetime import datetime, timezone
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
-from langchain_core.tools import tool
 
 from app.graph import (
     build_graph,
@@ -13,7 +12,6 @@ from app.graph import (
     system_prompt,
 )
 from app.schemas import SearchOutcome, Source
-from app.search import SearchEngine
 
 
 class StubEngine:

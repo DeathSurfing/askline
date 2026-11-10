@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -113,7 +112,6 @@ async def test_searxng_failure_falls_back_to_bing(tmp_path):
 @pytest.mark.asyncio
 async def test_search_falls_through_to_the_second_backend_and_caches(tmp_path):
     store = Store(tmp_path / "t.db")
-    bing = (FIXTURES / "bing.html").read_text()
     ddg = (FIXTURES / "ddg.html").read_text()
 
     def handler(request: httpx.Request) -> httpx.Response:

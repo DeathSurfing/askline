@@ -12,7 +12,7 @@ def test_openai_compatible_model_builds():
         provider="openai",
         base_url="http://127.0.0.1:11434/v1",
         model="gemma4:e2b",
-        api_key="ollama",
+        api_key="local",
     )
     model = build_chat_model(cfg)
     assert isinstance(model, ChatOpenAI)

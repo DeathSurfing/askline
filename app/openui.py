@@ -236,14 +236,6 @@ def quote(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def source_literal(sources: list[Source]) -> str:
-    parts = [
-        f"{{url: {quote(item.url)}, title: {quote(item.title)}, sourceName: {quote(host_of(item.url))}}}"
-        for item in sources[:MAX_SOURCES]
-    ]
-    return "sources = [" + ", ".join(parts) + "]"
-
-
 def _rows(items: list[dict[str, str]], keys: tuple[str, ...]) -> str:
     cells = ["[" + ", ".join(quote(item[key]) for key in keys) + "]" for item in items]
     return "rows = [" + ", ".join(cells) + "]"

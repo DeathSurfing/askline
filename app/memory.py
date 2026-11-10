@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 from .config import timezone_name
@@ -166,11 +167,6 @@ class Store:
             conn.commit()
         return cursor.rowcount > 0
 
-    def touch_thread(self, thread_id: str) -> None:
-        with self.connection() as conn:
-            conn.execute("UPDATE threads SET updated_at=? WHERE id=?", (iso(utc_now()), thread_id))
-            conn.commit()
-
     # turns -------------------------------------------------------------------
 
     def add_turn(
@@ -181,8 +177,6 @@ class Store:
         sources: list[Source] | None = None,
         trace: list[dict] | None = None,
     ) -> Turn:
-        import json
-
         turn = Turn(
             id=uuid.uuid4().hex[:16],
             thread_id=thread_id,
@@ -208,8 +202,6 @@ class Store:
         return turn
 
     def recent_turns(self, thread_id: str, limit: int = 16) -> list[Turn]:
-        import json
-
         with self.connection() as conn:
             rows = conn.execute(
                 "SELECT * FROM turns WHERE thread_id=? ORDER BY rowid DESC LIMIT ?",
@@ -358,8 +350,6 @@ class Store:
     # search cache ------------------------------------------------------------
 
     def cache_get(self, key: str) -> dict | None:
-        import json
-
         with self.connection() as conn:
             row = conn.execute(
                 "SELECT payload, created_at FROM search_cache WHERE key=?", (key,)
@@ -370,8 +360,6 @@ class Store:
         return {"payload": json.loads(row["payload"]), "created_at": created}
 
     def cache_put(self, key: str, payload: list[dict]) -> None:
-        import json
-
         with self.connection() as conn:
             conn.execute(
                 "INSERT INTO search_cache(key, payload, created_at) VALUES(?,?,?) "

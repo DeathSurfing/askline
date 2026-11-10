@@ -12,7 +12,7 @@ from urllib.parse import parse_qs, quote, quote_plus, unquote, urlparse
 import httpx
 from selectolax.lexbor import LexborHTMLParser as HTMLParser
 
-from .schemas import SearchOutcome, Source, iso
+from .schemas import SearchOutcome, Source
 
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
