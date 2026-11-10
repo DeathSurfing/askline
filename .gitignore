@@ -1,0 +1,19 @@
+# Runtime data and local state
+data/
+.audit/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# Environment
+.env
+.env.local
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/

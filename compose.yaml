@@ -1,0 +1,38 @@
+services:
+  searxng:
+    image: docker.io/searxng/searxng:latest
+    container_name: askline-search
+    ports:
+      - "127.0.0.1:${SEARXNG_PORT:-8088}:8080"
+    volumes:
+      - ./searxng:/etc/searxng:Z
+    environment:
+      SEARXNG_BASE_URL: http://localhost:${SEARXNG_PORT:-8088}/
+    restart: unless-stopped
+
+  askline:
+    build: .
+    image: askline:local
+    container_name: askline
+    depends_on:
+      - searxng
+    ports:
+      - "${PORT:-8000}:8000"
+    env_file:
+      - .env
+    environment:
+      DATA_DIR: /data
+      LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
+      LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0.2}
+      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-800}
+      AGENT_TZ: ${AGENT_TZ:-local}
+      SEARXNG_URL: http://searxng:8080
+    volumes:
+      - askline-data:/data
+    restart: unless-stopped
+
+volumes:
+  askline-data:

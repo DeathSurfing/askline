@@ -1,0 +1,14 @@
+.venv
+data
+.audit
+.git
+.gitignore
+__pycache__
+**/__pycache__
+.pytest_cache
+tests
+*.pyc
+.env
+design.md
+README.md
+searxng
