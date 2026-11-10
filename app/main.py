@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -27,6 +28,8 @@ class ChatRequest(BaseModel):
     thread_id: str | None = None
     message: str = Field(min_length=1, max_length=MAX_MESSAGE_CHARS)
     timezone: str | None = None
+    delegate: bool = False
+    visual: bool = False
 
 
 class OpenUIRequest(BaseModel):
@@ -160,8 +163,9 @@ async def models(request: Request):
 async def prompts(request: Request):
     with store(request).connection() as conn:
         cfg = load_config(conn)
-    items, source = await suggested_prompts(store(request), cfg)
-    return {"prompts": items, "source": source}
+    data = store(request)
+    items, source = await suggested_prompts(data, cfg)
+    return {"prompts": items, "source": source, "ask_count": data.ask_count()}
 
 
 @app.post("/api/openui")
@@ -287,6 +291,8 @@ async def chat(payload: ChatRequest, request: Request):
         user_text=message,
         user_turn=user_turn,
         tz=resolve_zone(payload.timezone),
+        delegate=payload.delegate,
+        visual=payload.visual,
     )
 
     async def events():

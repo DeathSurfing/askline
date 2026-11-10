@@ -8,7 +8,13 @@ from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_openai import ChatOpenAI
 
-from .config import ChatConfig
+from .config import ChatConfig, is_bundled
+
+
+def text_model(cfg: ChatConfig) -> BaseChatModel:
+    """A model that answers in text, with reasoning turned off on the bundled server."""
+    extra = {"chat_template_kwargs": {"enable_thinking": False}} if is_bundled(cfg) else None
+    return build_chat_model(cfg, extra_body=extra)
 
 
 def build_chat_model(cfg: ChatConfig, extra_body: dict | None = None) -> BaseChatModel:

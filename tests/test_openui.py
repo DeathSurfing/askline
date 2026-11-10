@@ -5,7 +5,7 @@ import json
 import pytest
 
 from app.config import ChatConfig
-from app.openui import OpenUIError, build_lang, generate_ui, normalize, parse_json, pick_layout
+from app.openui import OpenUIError, build_lang, extract_series, generate_ui, normalize, parse_json, pick_layout
 from app.schemas import SearchOutcome, Source
 
 CONFIG = ChatConfig(
@@ -80,18 +80,41 @@ def test_normalize_rejects_too_few_items():
 
 def test_build_lang_composes_a_valid_summary_program():
     lang = build_lang(normalize(DATA, "summary", [source(1)]), "summary", [source(1)])
-    assert lang.startswith("root = Card([header, answer, body, followups], sources)")
-    assert 'body = ListBlock([i1, i2, i3], "number")' in lang
-    assert 'i1 = ListItem("Scope", "Row changes for selected tables.")' in lang
-    assert 'sources = [{url: "https://example.com/1"' in lang
+    assert "root = Card([header, answer, body, followups])" in lang
+    assert "body = Table([c1, c2], rows)" in lang
+    assert 'c1 = Col("Point")' in lang
+    assert 'rows = [["Scope", "Row changes for selected tables."]' in lang
     assert lang.count("\n") >= 9
 
 
 def test_build_lang_composes_a_table_for_comparisons():
     lang = build_lang(normalize(DATA, "comparison", [source(1)]), "comparison", [source(1)])
-    assert "body = Table([c1, c2, c3])" in lang
-    assert 'c1 = Col("Criterion", ["Scope", "Version", "Cost"])' in lang
-    assert 'c2 = Col("Logical", ["Per table", "Tolerant", "Selective"])' in lang
+    assert "body = Table([c1, c2, c3], rows)" in lang
+    assert 'c1 = Col("Criterion")' in lang
+    assert 'c2 = Col("Logical")' in lang
+    assert 'rows = [["Scope", "Per table", "Whole cluster"]' in lang
+
+
+def test_build_lang_adds_a_chart_when_the_data_has_one():
+    data = normalize(
+        {**DATA, "chart": {"kind": "bar", "title": "Patch releases", "labels": ["3.15.0", "3.15.1"], "values": [1, 2], "unit": ""}},
+        "summary",
+        [source(1)],
+    )
+    lang = build_lang(data, "summary", [source(1)])
+    assert 'chart = BarChart(["3.15.0", "3.15.1"], [s1], "grouped", "", "")' in lang
+    assert 's1 = Series("Patch releases", [1.0, 2.0])' in lang
+
+
+def test_build_lang_adds_a_donut_chart():
+    data = normalize(
+        {**DATA, "chart": {"kind": "donut", "title": "Share", "labels": ["A", "B"], "values": [3, 7], "unit": "%"}},
+        "summary",
+        [source(1)],
+    )
+    lang = build_lang(data, "summary", [source(1)])
+    assert "chart = PieChart([p1, p2], true)" in lang
+    assert 'p1 = Slice("A", 3.0)' in lang
 
 
 @pytest.mark.asyncio
@@ -103,7 +126,7 @@ async def test_generate_ui_returns_a_program_and_sources(monkeypatch):
 
     monkeypatch.setattr(openui, "complete", fake_complete)
     result = await generate_ui(None, FakeEngine([source(1), source(2)]), CONFIG, "what changed?")
-    assert result["lang"].startswith("root = Card(")
+    assert "root = Card(" in result["lang"]
     assert result["layout"] == "summary"
     assert len(result["sources"]) == 2
     assert result["elapsed_ms"] >= 0
@@ -121,7 +144,7 @@ async def test_generate_ui_retries_with_feedback(monkeypatch):
 
     monkeypatch.setattr(openui, "complete", fake_complete)
     result = await generate_ui(None, FakeEngine([source()]), CONFIG, "what changed?")
-    assert result["lang"].startswith("root = Card(")
+    assert "root = Card(" in result["lang"]
     assert len(calls) == 2
     assert "not usable" in calls[1][-1].content
 
@@ -174,3 +197,54 @@ def test_openui_page_serves_the_view(client):
     response = client.get("/openui")
     assert response.status_code == 200
     assert "OpenUI" in response.text
+
+
+async def test_compose_ui_keeps_the_answer_verbatim(monkeypatch):
+    from app.openui import compose_ui
+
+    async def fake_complete(cfg, messages, timeout=90.0):
+        return (
+            '{"title":"T","subtitle":"S","answer":"rewritten",'
+            '"items":[{"label":"A","text":"One."},{"label":"B","text":"Two."}],'
+            '"followups":["Q1?","Q2?"]}'
+        )
+
+    monkeypatch.setattr("app.openui.complete", fake_complete)
+    result = await compose_ui(
+        ChatConfig(provider="openai", base_url="http://x/v1", model="m", api_key="k"),
+        "Why?",
+        "The real answer with [1].",
+        [Source(1, "T", "https://example.com", "s", "searxng")],
+    )
+    assert "The real answer with [1]." in result["answer"]
+    assert result["layout"] == "summary"
+
+
+async def test_compose_ui_falls_back_without_a_model(monkeypatch):
+    from app.openui import compose_ui
+
+    async def boom(cfg, messages, timeout=90.0):
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr("app.openui.complete", boom)
+    result = await compose_ui(
+        ChatConfig(provider="openai", base_url="http://x/v1", model="m", api_key="k"),
+        "Why is America broke?",
+        "A first sentence that is long enough. A second sentence that is also long enough.",
+        [],
+    )
+    assert result["layout"] == "summary"
+    assert "root = Card(" in result["lang"]
+    assert result["answer"].startswith("A first sentence")
+
+
+def test_extract_series_reads_year_and_percentage():
+    text = "Turnout was 39.5% in 2002, 41.1% in 2006, and 65.3% in 2024."
+    chart = extract_series(text)
+    assert chart["labels"] == ["2002", "2006", "2024"]
+    assert chart["values"] == [39.5, 41.1, 65.3]
+    assert chart["unit"] == "%"
+
+
+def test_extract_series_needs_three_points():
+    assert extract_series("Turnout was 65.3% in 2024.") is None

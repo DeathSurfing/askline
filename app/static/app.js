@@ -12,10 +12,13 @@
     menu: $('menu-btn'), sidebar: $('sidebar'), newChat: $('new-chat-btn'),
     threadList: $('thread-list'), threadsEmpty: $('threads-empty'),
     model: $('model-chip'), banner: $('key-banner'), bannerSettings: $('banner-settings-btn'),
+    openuiLink: $('openui-link'), sidebarOpen: $('sidebar-open'), sidebarCollapse: $('sidebar-collapse'),
     settingsBtn: $('settings-btn'), memoryBtn: $('memory-btn'), memory: $('memory'),
     memoryTitle: $('memory-title'), memoryClose: $('memory-close'), memoryBody: $('memory-body'),
     shell: $('shell'), scrim: $('scrim'), notice: $('notice'), transcript: $('transcript'),
     empty: $('empty'), examples: $('examples'), turns: $('turns'), composer: $('composer'), prompt: $('prompt'), send: $('send-btn'),
+    visual: $('mode-visual'), delegate: $('mode-delegate'),
+    theme: $('theme-btn'), themeSun: document.querySelector('.theme-icon--sun'), themeMoon: document.querySelector('.theme-icon--moon'),
     dialog: $('settings-dialog'), form: $('settings-form'), dialogStatus: $('settings-status'),
     test: $('test-btn'), save: $('save-btn'), cancel: $('cancel-btn'),
     modelHint: $('model-hint'), modelOptions: $('model-options'),
@@ -25,7 +28,38 @@
     },
   };
 
-  const state = { threadId: null, threads: [], busy: false, memoryOpen: false, sidebarOpen: false, uid: 0, noticeTimer: 0 };
+  const state = { threadId: null, threads: [], busy: false, memoryOpen: false, sidebarOpen: false, uid: 0, noticeTimer: 0, visual: true, delegate: true, sidebarCollapsed: localStorage.getItem('askline-sidebar') === 'collapsed' };
+  const THEMES = ['system', 'light', 'dark'];
+
+  function storedTheme() {
+    const value = localStorage.getItem('askline-theme');
+    return THEMES.includes(value) ? value : 'system';
+  }
+
+  function resolvedTheme(theme = storedTheme()) {
+    if (theme !== 'system') return theme;
+    return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  }
+
+  function applyTheme(theme, persist = true) {
+    if (persist) localStorage.setItem('askline-theme', theme);
+    const resolved = resolvedTheme(theme);
+    document.documentElement.classList.toggle('dark', resolved === 'dark');
+    document.documentElement.dataset.theme = resolved;
+    els.theme.setAttribute('aria-label', `Color theme: ${theme}. Activate to change.`);
+    els.theme.title = `Theme: ${theme}`;
+    els.themeSun.hidden = resolved !== 'light';
+    els.themeMoon.hidden = resolved === 'light';
+    const meta = document.querySelector('meta[name="theme-color"]');
+    const bg = getComputedStyle(document.documentElement).getPropertyValue('--background').trim();
+    if (meta && bg) meta.content = bg;
+    window.AsklineShadcn?.setTheme?.(resolved);
+  }
+
+  function cycleTheme() {
+    const index = THEMES.indexOf(storedTheme());
+    applyTheme(THEMES[(index + 1) % THEMES.length]);
+  }
 
   // ---------- formatting ----------
 
@@ -209,6 +243,37 @@
 
   const sourceId = (uid, index) => `src-${uid}-${index}`;
 
+  let shadcnPromise = null;
+  function loadShadcn() {
+    if (window.AsklineShadcn?.render) return Promise.resolve();
+    if (shadcnPromise) return shadcnPromise;
+    shadcnPromise = new Promise((resolve, reject) => {
+      const css = document.createElement('link');
+      css.rel = 'stylesheet';
+      css.href = '/static/vendor/shadcn/askline-shadcn.css';
+      document.head.append(css);
+      const script = document.createElement('script');
+      script.src = '/static/vendor/shadcn/askline-shadcn.js';
+      script.onload = () => (window.AsklineShadcn?.render ? resolve() : reject(new Error('The visual bundle did not start.')));
+      script.onerror = () => reject(new Error('The visual bundle did not load.'));
+      document.head.append(script);
+    });
+    return shadcnPromise;
+  }
+
+  function renderInterface(view) {
+    const mount = h('div', { class: 'turn__ui' });
+    view.body.replaceChildren(mount);
+    loadShadcn()
+      .then(() => {
+        if (!view.ui) return;
+        window.AsklineShadcn.render(mount, view.ui.lang, (event) => {
+          if (event?.type === 'continue_conversation' && event.humanFriendlyMessage) sendMessage(event.humanFriendlyMessage);
+        });
+      })
+      .catch((error) => setStatus(view, error.message, 'note'));
+  }
+
   function userTurn(text, iso) {
     return h('article', { class: 'turn turn--user' }, [
       h('div', { class: 'bubble', text }),
@@ -222,6 +287,7 @@
     view.status = h('p', { class: 'turn__status', 'aria-live': 'polite', hidden: true });
     view.body = h('div', { class: 'turn__body' });
     view.sourceList = h('details', { class: 'sources', hidden: true });
+    view.tasks = h('details', { class: 'tasks', hidden: true });
     view.elapsed = h('span', { class: 'turn__elapsed' });
     view.rate = h('span', { class: 'turn__rate', hidden: true });
     view.copy = h('button', {
@@ -236,6 +302,7 @@
       view.recall,
       view.status,
       view.body,
+      view.tasks,
       view.sourceList,
       h('footer', { class: 'turn__foot' }, [h('time', { class: 'turn__time', datetime: iso, text: stamp(iso) }), view.elapsed, view.rate, view.copy]),
     ]);
@@ -275,6 +342,19 @@
     view.sourceList.hidden = items.length === 0;
   }
 
+  function renderTasks(view) {
+    if (!view.trace?.length) return;
+    view.tasks.replaceChildren(
+      h('summary', { text: `${view.trace.length} ${view.trace.length === 1 ? 'task' : 'tasks'}` }),
+      h('ul', {}, view.trace.map((task) => h('li', { class: 'task', style: `--depth: ${Math.max(0, (task.depth || 1) - 1)}` }, [
+        h('span', { class: 'task__role', text: task.role }),
+        h('span', { class: 'task__brief', text: task.brief }),
+        h('span', { class: 'task__meta', text: `${task.status}${task.elapsed_ms ? ` · ${formatElapsed(task.elapsed_ms)}` : ''}` }),
+      ]))),
+    );
+    view.tasks.hidden = false;
+  }
+
   function showRecall(view, items) {
     if (!items.length) return;
     view.recall.replaceChildren(
@@ -296,15 +376,18 @@
   }
 
   // Shared by a live "done" event and a stored turn when a thread reopens.
-  function completeView(view, { text, sources, cited, elapsed_ms: elapsedMs, tok_per_s: tokPerS }) {
+  function completeView(view, { text, sources, cited, trace, elapsed_ms: elapsedMs, tok_per_s: tokPerS }) {
     cancelAnimationFrame(view.frame);
     view.frame = 0;
     view.text = text || view.text;
     if (sources?.length) view.sources = sources;
     view.cited = Array.isArray(cited) ? new Set(cited) : null;
+    if (Array.isArray(trace)) view.trace = trace;
+    renderTasks(view);
     setStatus(view, '');
-    renderAnswer(view);
-    if (!view.text.trim()) view.body.replaceChildren(h('p', { class: 'field__hint', text: 'The model returned no text.' }));
+    if (view.ui) renderInterface(view);
+    else renderAnswer(view);
+    if (!view.ui && !view.text.trim()) view.body.replaceChildren(h('p', { class: 'field__hint', text: 'The model returned no text.' }));
     renderSources(view);
     if (Number.isFinite(elapsedMs)) view.elapsed.textContent = formatElapsed(elapsedMs);
     if (Number.isFinite(tokPerS) && tokPerS > 0) {
@@ -337,7 +420,11 @@
     const view = assistantView(turn.created_at);
     view.sources = turn.sources || [];
     view.text = turn.text || '';
-    renderAnswer(view);
+    view.ui = (turn.trace || []).find((item) => item.kind === 'ui') || null;
+    view.trace = (turn.trace || []).filter((item) => item.role);
+    if (view.ui) renderInterface(view);
+    else renderAnswer(view);
+    renderTasks(view);
     renderSources(view);
     view.copy.hidden = false;
     view.article.setAttribute('aria-busy', 'false');
@@ -376,7 +463,7 @@
     switch (name) {
       case 'meta':
         state.threadId = data.thread_id || state.threadId;
-        if (data.provider && data.model) els.model.textContent = `${data.provider} · ${data.model}`;
+        if (data.provider && data.model) { els.model.textContent = data.model; els.model.title = `${data.provider} · ${data.model}`; }
         refreshThreads();
         return false;
       case 'memory':
@@ -403,6 +490,19 @@
           view.rate.textContent = `${data.tok_per_s.toFixed(1)} tok/s`;
           view.rate.hidden = false;
         }
+        return false;
+      case 'delegate_start':
+        setStatus(view, 'Planning subagents…', 'progress');
+        return false;
+      case 'ui':
+        view.ui = { lang: data.lang, layout: data.layout, title: data.title };
+        if (Array.isArray(data.sources) && data.sources.length) view.sources = data.sources;
+        clearProgress(view);
+        renderSources(view);
+        renderInterface(view);
+        return false;
+      case 'task':
+        setStatus(view, `${data.role} ${data.status === 'running' ? 'working' : data.status}…`, 'progress');
         return false;
       case 'done':
         completeView(view, data);
@@ -433,6 +533,8 @@
         thread_id: state.threadId || undefined,
         message,
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        delegate: state.delegate,
+        visual: state.visual,
       }),
     });
     if (!res.ok || !res.body) throw new Error(errorMessage(await res.json().catch(() => null), res.status));
@@ -474,6 +576,7 @@
   function sendMessage(text) {
     if (state.busy) return;
     els.turns.append(userTurn(text, new Date().toISOString()));
+    if (els.openuiLink) els.openuiLink.hidden = true;
     updateEmpty();
     scrollToEnd();
     streamAnswer(text);
@@ -577,7 +680,8 @@
 
   async function loadPrompts() {
     try {
-      const { prompts } = await api('/api/prompts');
+      const { prompts, ask_count } = await api('/api/prompts');
+      if (els.openuiLink) els.openuiLink.hidden = (ask_count || 0) > 0;
       renderExamples(prompts || []);
     } catch {
       // The static examples stay when suggestions are unavailable.
@@ -702,6 +806,31 @@
 
   // ---------- composer ----------
 
+  function applyModes() {
+    els.visual.setAttribute('aria-pressed', String(state.visual));
+    els.delegate.setAttribute('aria-pressed', String(state.delegate));
+    if (state.visual) loadShadcn().catch((error) => notify(error.message));
+  }
+
+  function setMode(mode) {
+    if (mode === 'ui') state.visual = !state.visual;
+    else state.delegate = !state.delegate;
+    applyModes();
+  }
+
+  function applySidebar() {
+    const collapsed = state.sidebarCollapsed;
+    document.body.classList.toggle('sidebar-collapsed', collapsed);
+    els.sidebarOpen.setAttribute('aria-expanded', String(!collapsed));
+    els.sidebarCollapse.setAttribute('aria-expanded', String(!collapsed));
+  }
+
+  function toggleSidebar() {
+    state.sidebarCollapsed = !state.sidebarCollapsed;
+    localStorage.setItem('askline-sidebar', state.sidebarCollapsed ? 'collapsed' : 'open');
+    applySidebar();
+  }
+
   // Grows with the text up to 8 rows, then scrolls.
   function resizePrompt() {
     const box = els.prompt;
@@ -732,7 +861,7 @@
   // ---------- header and settings ----------
 
   function applyHealth(health) {
-    els.model.textContent = `${health.provider} · ${health.model}`;
+    els.model.textContent = health.model; els.model.title = `${health.provider} · ${health.model}`;
     els.banner.hidden = health.has_api_key !== false;
   }
 
@@ -850,6 +979,12 @@
     els.prompt.addEventListener('input', resizePrompt);
     els.prompt.addEventListener('keydown', onPromptKey);
     els.composer.addEventListener('submit', onSubmit);
+    els.visual.addEventListener('click', () => setMode('ui'));
+    els.sidebarOpen.addEventListener('click', toggleSidebar);
+    els.sidebarCollapse.addEventListener('click', toggleSidebar);
+    applySidebar();
+    applyModes();
+    els.delegate.addEventListener('click', () => setMode('delegate'));
 
     els.form.addEventListener('submit', saveSettings);
     els.test.addEventListener('click', testConnection);
@@ -859,6 +994,7 @@
   }
 
   async function init() {
+    applyTheme(storedTheme(), false);
     const [health, threads] = await Promise.allSettled([api('/api/health'), api('/api/threads')]);
     if (health.status === 'fulfilled') applyHealth(health.value);
     else notify(`Couldn't reach the server: ${health.reason.message}`);
@@ -874,6 +1010,10 @@
     await openThread(sortThreads(state.threads)[0].id);
   }
 
+  els.theme.addEventListener('click', cycleTheme);
+  window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
+    if (storedTheme() === 'system') applyTheme('system', false);
+  });
   bind();
   resizePrompt();
   init().catch((error) => notify(`Startup failed: ${error.message}`));

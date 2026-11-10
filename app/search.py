@@ -7,7 +7,7 @@ import os
 import re
 from base64 import urlsafe_b64decode
 from datetime import datetime, timedelta, timezone
-from urllib.parse import parse_qs, quote_plus, unquote, urlparse
+from urllib.parse import parse_qs, quote, quote_plus, unquote, urlparse
 
 import httpx
 from selectolax.lexbor import LexborHTMLParser as HTMLParser
@@ -184,6 +184,30 @@ def parse_mojeek(markup: str) -> list[Source]:
     return results
 
 
+def parse_wikipedia(payload: dict, extract: str = "") -> list[Source]:
+    pages = payload.get("query", {}).get("search", [])
+    results: list[Source] = []
+    for item in pages:
+        title = item.get("title", "").strip()
+        if not title:
+            continue
+        snippet = extract if extract and not results else re.sub(r"<[^>]+>", "", item.get("snippet", ""))
+        results.append(
+            Source(
+                index=0,
+                title=title,
+                url=f"https://en.wikipedia.org/wiki/{quote(title.replace(' ', '_'))}",
+                snippet=" ".join(snippet.split())[:2600],
+                backend="wikipedia",
+            )
+        )
+    return results
+
+
+def wants_current(query: str) -> bool:
+    return bool(re.search(r"(?i)\b(latest|current|today|news|price|release|version|now|2026)\b", query))
+
+
 def dedupe(results: list[Source], limit: int) -> list[Source]:
     seen: set[str] = set()
     unique: list[Source] = []
@@ -246,12 +270,49 @@ class SearchEngine:
             return SearchOutcome(query=query, results=results, cached=True, backend=results[0].backend if results else "")
 
         errors: list[str] = []
+        wikipedia_first = not wants_current(query)
         async with httpx.AsyncClient(
             timeout=self.timeout,
             follow_redirects=True,
             headers={"User-Agent": USER_AGENT, "Accept-Language": "en-US,en;q=0.9"},
             transport=self.transport,
         ) as client:
+            async def wikipedia() -> list[Source]:
+                response = await client.get(
+                    "https://en.wikipedia.org/w/api.php",
+                    params={"action": "query", "list": "search", "srsearch": query, "format": "json", "srlimit": count},
+                )
+                if response.status_code >= 400:
+                    return []
+                payload = response.json()
+                pages = payload.get("query", {}).get("search", [])
+                extract = ""
+                if pages:
+                    detail = await client.get(
+                        "https://en.wikipedia.org/w/api.php",
+                        params={
+                            "action": "query",
+                            "prop": "extracts",
+                            "explaintext": "1",
+                            "titles": pages[0]["title"],
+                            "format": "json",
+                            "redirects": "1",
+                        },
+                    )
+                    if detail.status_code < 400:
+                        blocks = detail.json().get("query", {}).get("pages", {})
+                        extract = next(iter(blocks.values()), {}).get("extract", "")[:2600]
+                return relevant(dedupe(parse_wikipedia(payload, extract), count), query)
+
+            if wikipedia_first:
+                try:
+                    results = await wikipedia()
+                    if results:
+                        return self._finished(key, query, results, "wikipedia")
+                    errors.append("wikipedia: no results")
+                except Exception as exc:
+                    errors.append(f"wikipedia: {type(exc).__name__}")
+
             if self.searxng_url:
                 try:
                     response = await client.get(
@@ -274,6 +335,15 @@ class SearchEngine:
                 ("duckduckgo", f"https://html.duckduckgo.com/html/?q={quote_plus(query)}", parse_ddg),
                 ("mojeek", f"https://www.mojeek.com/search?q={quote_plus(query)}", parse_mojeek),
             )
+            if not wikipedia_first:
+                try:
+                    results = await wikipedia()
+                    if results:
+                        return self._finished(key, query, results, "wikipedia")
+                    errors.append("wikipedia: no results")
+                except Exception as exc:
+                    errors.append(f"wikipedia: {type(exc).__name__}")
+
             for name, url, parser in backends:
                 try:
                     response = await client.get(url)

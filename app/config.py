@@ -122,6 +122,9 @@ def timezone_name() -> str:
 
 def is_bundled(cfg: ChatConfig) -> bool:
     """True for the compose model server, which accepts chat_template_kwargs."""
+    import os
     from urllib.parse import urlparse
 
+    if os.environ.get("LLM_DISABLE_THINKING", "").strip().lower() in {"1", "true", "yes"}:
+        return True
     return (urlparse(cfg.base_url).hostname or "") == "llm"

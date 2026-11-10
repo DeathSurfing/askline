@@ -4,9 +4,18 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#0a0a0a">
   <title>Askline OpenUI lab</title>
+  <script>
+    (function () {
+      var saved = localStorage.getItem('askline-theme') || 'system';
+      var dark = saved === 'dark' || (saved === 'system' && !window.matchMedia('(prefers-color-scheme: light)').matches);
+      document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+      document.documentElement.classList.toggle('dark', dark);
+    })();
+  </script>
+  <link rel="stylesheet" href="/static/vendor/shadcn/askline-shadcn.css">
   <link rel="stylesheet" href="/static/openui/openui.css">
-  <link rel="stylesheet" href="/static/vendor/openui/openui-styles.css">
 </head>
 <body>
   <a class="skip-link" href="#lab">Skip to the lab</a>
@@ -47,7 +56,7 @@
     <p class="footnote">Rendered with <a href="https://www.openui.com/" rel="noreferrer">OpenUI</a> and grounded in live search results. Answers can be wrong. Follow the sources.</p>
   </main>
 
-  <script src="/static/vendor/openui/openui-bundle.min.js"></script>
+  <script src="/static/vendor/shadcn/askline-shadcn.js"></script>
   <script src="/static/openui/openui.js" defer></script>
 </body>
 </html>

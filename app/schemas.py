@@ -42,6 +42,7 @@ class Turn:
     text: str
     created_at: str
     sources: list[Source] = field(default_factory=list)
+    trace: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         data = asdict(self)

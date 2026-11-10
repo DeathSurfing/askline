@@ -1,4 +1,8 @@
-const { React, createRoot, Renderer, openuiChatLibrary } = window.__OpenUI || {};
+const shadcn = window.AsklineShadcn || {};
+const savedTheme = localStorage.getItem('askline-theme') || 'system';
+const dark = savedTheme === 'dark' || (savedTheme === 'system' && !window.matchMedia('(prefers-color-scheme: light)').matches);
+document.documentElement.classList.toggle('light', !dark);
+document.documentElement.dataset.theme = dark ? 'dark' : 'light';
 const form = document.getElementById("form");
 const input = document.getElementById("question");
 const submit = document.getElementById("submit");
@@ -64,27 +68,20 @@ async function readError(response) {
   return `The request failed with status ${response.status}.`;
 }
 
-function renderInterface(node, lang, turn) {
-  const root = createRoot(node);
-  root.render(
-    React.createElement(Renderer, {
-      library: openuiChatLibrary,
-      response: lang,
-      onAction: (event) => {
-        if (event?.type === "continue_conversation" && event.humanFriendlyMessage) {
-          ask(event.humanFriendlyMessage);
-        }
-      },
-    }),
-  );
+function renderInterface(node, lang) {
+  shadcn.render(node, lang, (event) => {
+    if (event?.type === "continue_conversation" && event.humanFriendlyMessage) {
+      ask(event.humanFriendlyMessage);
+    }
+  }, document.documentElement.dataset.theme);
 }
 
 async function ask(question, existingTurn) {
   const text = String(question || "").trim();
   if (!text || busy) return;
-  if (!window.__OpenUI || !Renderer || !openuiChatLibrary) {
+  if (!shadcn.render) {
     const turn = turnShell(text, existingTurn);
-    errorCard(turn, text, "The OpenUI bundle did not load. Reload the page.");
+    errorCard(turn, text, "The shadcn bundle did not load. Reload the page.");
     return;
   }
 
@@ -111,7 +108,7 @@ async function ask(question, existingTurn) {
     card.replaceChildren();
     const mount = el("div", "result__mount");
     card.append(mount);
-    renderInterface(mount, data.lang, turn);
+    renderInterface(mount, data.lang);
 
     const meta = el("div", "result__meta");
     meta.append(

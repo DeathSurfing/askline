@@ -5,7 +5,8 @@ what you asked it. It has exactly one tool, web search, and one job: give a fast
 answer, then remember the question and the time it arrived.
 
 The app is a FastAPI service, a LangGraph agent, a SQLite file, and a single-page
-interface. Every model call goes through an OpenAI-compatible or Anthropic-compatible
+interface. By default an answer is prose first and a small interface second, assembled by
+a tree of subagents that research, design, and critique the reply. Every model call goes through an OpenAI-compatible or Anthropic-compatible
 endpoint, so the choice of provider is configuration rather than code. The whole stack
 runs with one command through Docker Compose or Podman Compose.
 
@@ -63,12 +64,33 @@ sequenceDiagram
     A-->>B: done (text, sources, cited, elapsed)
 ```
 
-The agent is a three-node LangGraph state machine: `agent`, `collect`, and the tool node.
+The plain path is a three-node LangGraph state machine: `agent`, `collect`, and the tool node.
 `agent` decides whether to search. The tool node calls one function, `web_search`.
 `collect` merges the results, removes duplicates by URL, and renumbers the source list so
 the citation numbers the model sees are the numbers the browser receives. When the round
 cap is reached, the model is bound without tools, which forces an answer instead of a
 third search.
+
+## Answer shapes
+
+Every turn has two switches, and both start on. **Visual** adds a generated card below the
+prose answer: a header, a short answer, a structured list or comparison table, optional
+chart, follow-up questions, and the sources. **Delegate** hands the research to a small
+tree of subagents before the answer is written. Turn both off for a single agent pass.
+The API defaults are off so existing clients keep the plain behaviour; the interface sends
+both as true.
+
+The subagent tree has a depth cap of three and a budget of seven nodes. A planner turns
+the question into one to three briefs with a role, `research`, `design`, or `critic`. A
+research node searches, writes findings, and may ask up to two follow-up nodes. Design and
+critique nodes work from the parent findings. The root model then writes one cited answer
+from the collected findings. The task tree streams to the browser while it runs and is
+stored with the turn, so reopening a thread shows the same trace.
+
+Follow-up questions still resolve against the thread. Before planning, a short model call
+rewrites "can you showcase me metrics" into a standalone search question using the earlier
+turns. That resolved question drives the briefs, while the final answer still addresses
+the user's own wording.
 
 ## Memory, including the time
 
@@ -222,7 +244,7 @@ cold copy of the directory is safer than copying the file under load.
 | `POST /api/settings` | Save provider, endpoint, model, sampling, and optionally a key |
 | `POST /api/settings/test` | One completion against submitted or stored settings |
 | `GET /api/models` | Model ids from the endpoint's model list |
-| `GET /api/prompts` | Three suggested questions from the user's recent history |
+| `GET /api/prompts` | Three suggested questions, the source, and the question count |
 | `GET /openui` | The OpenUI lab page |
 | `POST /api/openui` | Question to a generated OpenUI interface |
 | `GET /api/threads` | Thread list with turn counts |
@@ -232,8 +254,8 @@ cold copy of the directory is safer than copying the file under load.
 | `GET /api/timeline` | User questions grouped by local day |
 | `POST /api/chat` | SSE turn stream |
 
-`POST /api/chat` accepts `message`, optional `thread_id`, and optional `timezone`. The
-response is `text/event-stream` with these events.
+`POST /api/chat` accepts `message`, optional `thread_id`, `timezone`, and the booleans
+`visual` and `delegate`. The response is `text/event-stream` with these events.
 
 | Event | Carries |
 | --- | --- |
@@ -244,7 +266,13 @@ response is `text/event-stream` with these events.
 | `token` | One text delta |
 | `stats` | Running `tokens`, `seconds`, and `tok_per_s`, emitted at most every 250 ms |
 | `reset` | Clear the streamed text because the model broke its answer |
-| `done` | Final text, sources, cited numbers, elapsed milliseconds, tokens, tok/s |
+| `delegate_start` | The planning phase of the subagent tree began |
+| `task` | A subagent started, with id, parent, depth, role, and brief |
+| `task_done` | A subagent finished, with text, source indexes, elapsed, and error |
+| `ui_start` | The visual compose call began |
+| `ui` | OpenUI Lang, layout, title, and sources for the inline card |
+| `ui_error` | The card could not be composed, so the prose stands alone |
+| `done` | Final text, sources, cited numbers, elapsed, tokens, tok/s, task trace |
 | `error` | A message for the interface |
 
 The turn is stored only after `done`. A disconnected stream leaves the user question in
@@ -252,11 +280,12 @@ the log and no assistant answer beside it.
 
 ## The OpenUI lab
 
-`/openui` is a second surface. Ask a question and the app returns a generated
-interface rather than a chat bubble: a card with a header, a short answer, a numbered
-list or a comparison table, related questions, and the sources behind the answer. The
-renderer is [OpenUI](https://www.openui.com/) running from a vendored browser bundle, so
-there is no build step.
+`/openui` is a second surface, linked from the header only while the user has no earlier
+questions. It renders the same kind of card as Visual mode, but on its own page and with
+its own search. The renderer is [OpenUI](https://www.openui.com/) with the shadcn design
+system, built once into `app/static/vendor/shadcn/` and loaded as plain script and style
+tags, so the app itself keeps its no-build property. The card follows the app theme
+through next-themes.
 
 The model does not write OpenUI Lang directly. LFM3 1.7B cannot hold the 26 KB language
 spec reliably; attempts produced raw markup, repeated roots, and truncated programs. The
@@ -269,6 +298,8 @@ answer.
 
 `POST /api/openui` accepts `message` and returns the program, its sources, the layout,
 and the elapsed time. It runs its own search, so it works before any chat thread exists.
+Visual mode uses the same composer on an answer that delegation already produced, so it
+adds no search.
 
 ## Develop
 
@@ -290,7 +321,7 @@ The suite replaces the chat model with a scripted `BaseChatModel` and feeds the 
 engine an `httpx.MockTransport`, so routing, the two-round cap, source merging, citation
 filtering, SSE framing, persistence, caching, settings, and the memory block are exercised
 through the real application. Saved Bing and DuckDuckGo markup keeps the parser tests
-honest about page structure. The current suite has 65 tests.
+honest about page structure. The current suite has 76 tests.
 
 A live check still matters. Point the app at a real endpoint, ask a question that needs
 today's web, and confirm that the answer cites a page whose snippet supports it. Then ask
@@ -332,12 +363,13 @@ app/
   graph.py      LangGraph state machine, prompt, tool binding
   llm.py        provider factory, connection test, model list
   prompts.py    suggestions derived from recent questions, cached by ask count
+  subagents.py  planner, research, design, and critique nodes, depth and node caps
   openui.py     JSON from the model, composed into an OpenUI Lang program
   search.py     SearXNG and fallback parsers, relevance filter, cache
   memory.py     SQLite schema, transcript, FTS5 recall, timeline
   citations.py  citation parsing and invalid marker removal
   schemas.py    shared records
-  static/       the chat page plus the OpenUI lab and its vendored renderer
+  static/       the chat page, the OpenUI lab, and the vendored shadcn renderer
 tests/          pytest suite with model and transport seams
 design.md       the full design and its rejected alternatives
 searxng/        search service configuration
@@ -345,9 +377,12 @@ searxng/        search service configuration
 
 ## Limits
 
-The scraped fallbacks are best-effort. Search engines change markup and block clients,
-and the parsers will need occasional attention; SearXNG is the path built for stability.
-SearXNG itself can be rate-limited by the engines it queries.
+Search runs a chain: Wikipedia for reference questions, then SearXNG, Bing, DuckDuckGo,
+and Mojeek, with a ten-minute SQLite cache. Wikipedia goes first when the question does not
+ask for something current, because its API is stable and its extracts carry the figures a
+reference answer needs. SearXNG is the path built for stability, but its upstream engines
+rate-limit, so the scraped parsers remain as fallbacks. Those parsers are best-effort and
+will need occasional attention when a page changes.
 
 The app has no authentication. Run it on localhost, or on a network you already trust.
 The compose stack publishes the app on all interfaces and SearXNG on localhost only.

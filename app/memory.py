@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS turns(
   role TEXT NOT NULL CHECK(role IN ('user','assistant')),
   text TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  sources TEXT NOT NULL DEFAULT '[]'
+  sources TEXT NOT NULL DEFAULT '[]',
+  trace TEXT NOT NULL DEFAULT '[]'
 );
 CREATE INDEX IF NOT EXISTS turns_thread_time ON turns(thread_id, created_at);
 
@@ -107,6 +108,9 @@ class Store:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as conn:
             conn.executescript(SCHEMA)
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(turns)")}
+            if "trace" not in columns:
+                conn.execute("ALTER TABLE turns ADD COLUMN trace TEXT NOT NULL DEFAULT '[]'")
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
@@ -169,7 +173,14 @@ class Store:
 
     # turns -------------------------------------------------------------------
 
-    def add_turn(self, thread_id: str, role: str, text: str, sources: list[Source] | None = None) -> Turn:
+    def add_turn(
+        self,
+        thread_id: str,
+        role: str,
+        text: str,
+        sources: list[Source] | None = None,
+        trace: list[dict] | None = None,
+    ) -> Turn:
         import json
 
         turn = Turn(
@@ -179,12 +190,13 @@ class Store:
             text=text,
             created_at=iso(utc_now()),
             sources=sources or [],
+            trace=trace or [],
         )
         payload = json.dumps([source.to_dict() for source in turn.sources])
         with self.connection() as conn:
             conn.execute(
-                "INSERT INTO turns(id, thread_id, role, text, created_at, sources) VALUES(?,?,?,?,?,?)",
-                (turn.id, turn.thread_id, turn.role, turn.text, turn.created_at, payload),
+                "INSERT INTO turns(id, thread_id, role, text, created_at, sources, trace) VALUES(?,?,?,?,?,?,?)",
+                (turn.id, turn.thread_id, turn.role, turn.text, turn.created_at, payload, json.dumps(turn.trace)),
             )
             if role == "user":
                 conn.execute(
@@ -214,6 +226,7 @@ class Store:
                     text=row["text"],
                     created_at=row["created_at"],
                     sources=[Source.from_dict(item) for item in raw],
+                    trace=json.loads(row["trace"] or "[]"),
                 )
             )
         return turns

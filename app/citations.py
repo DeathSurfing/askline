@@ -34,3 +34,27 @@ def ordered_sources(sources: list[dict], cited: list[int]) -> list[dict]:
     return [source for source in sources if source.get("index") in cited] + [
         source for source in sources if source.get("index") not in cited
     ]
+
+
+def merge_sources(existing: list[dict], incoming: list[dict]) -> list[dict]:
+    merged = list(existing)
+    seen = {item["url"] for item in merged}
+    for result in incoming:
+        url = str(result.get("url", ""))
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        merged.append(dict(result))
+    return [{**item, "index": position} for position, item in enumerate(merged, start=1)]
+
+
+def append_sources(existing: list[dict], incoming: list[dict]) -> list[dict]:
+    """Add unseen results with the next index and leave earlier citations stable."""
+    seen = {item["url"] for item in existing}
+    for result in incoming:
+        url = str(result.get("url", ""))
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        existing.append({**result, "index": len(existing) + 1})
+    return existing

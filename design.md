@@ -324,27 +324,65 @@ This keeps the home screen tied to the user's actual work without adding a secon
 a background job. The trade is one extra model call after the first turn, hidden behind a
 fallback.
 
-## The OpenUI lab
+## Answer shapes and subagents
+
+A turn has two independent switches. **Visual** adds a generated interface below the prose.
+**Delegate** researches through a subagent tree before the answer is written. Both start on
+in the interface; the API defaults to off so every existing client keeps the plain path.
+
+The delegate tree is deliberately small. `MAX_DEPTH = 3` counts the root's children as
+depth one, `MAX_CHILDREN = 3` bounds each node, and `MAX_NODES = 7` bounds the whole run.
+A planner returns up to three briefs with one of three roles. Research nodes search, write
+findings, and may spawn follow-ups. Design and critique nodes work from the parent's
+findings. The root model then writes one cited answer from all findings. The tree streams
+as `task` and `task_done` events and is stored in `turns.trace`, so reopening a thread shows
+the same trace.
+
+Follow-ups are resolved before planning. When history exists, `resolve_question` asks for a
+standalone search question built from the earlier turns, and that question drives the
+briefs. The final synthesis still receives the user's original wording and the conversation
+so the answer responds to what was actually asked.
+
+The trade is latency. A plain turn is one or two model calls. A delegated turn is a query
+resolution call, a planner call, a call per node, and a synthesis call, so the measured
+turn grows from about ten seconds to about thirty on the laptop GPU. The depth cap keeps
+the worst case bounded, and the UI shows each node as it lands.
+
+## The OpenUI lab and Visual mode
 
 The chat answer is prose. The OpenUI lab answers the same question as a small interface:
-a card with a header, the answer, structured facts, follow-up buttons, and sources. The
-renderer is the official OpenUI browser bundle, vendored into `app/static/vendor/openui/`
-so the app keeps its no-build property.
+a card with a header, the answer, structured facts, follow-up buttons, sources, and an
+optional chart. Visual mode composes the same card from an answer that delegation already
+produced, so turning Visual on does not add a search.
+
+The renderer is [OpenUI](https://www.openui.com/) with the shadcn design system. The island
+is built once with Vite into `app/static/vendor/shadcn/askline-shadcn.js` and
+`askline-shadcn.css`, and the page loads them as plain script and style tags, so the app
+still has no build step. next-themes inside the island receives the resolved app theme,
+which keeps the card's tokens in step with the page in light and dark mode. The app's own
+tokens come from the same shadcn Tailwind primitive sheet, so there is one palette rather
+than a second set of colors.
 
 The first attempt asked the model to write OpenUI Lang. LFM3 1.7B failed in four ways:
 it rambled past the program, repeated `root`, wrote named arguments where the language
 takes positional ones, and emitted multiline arrays that the line-oriented parser cannot
 read. The fix is constrained generation. The model returns JSON with a title, subtitle,
-answer, three or four items, and two follow-ups. llama.cpp enforces the schema with
+answer, items, two follow-ups, and an optional chart. llama.cpp enforces the schema with
 `response_format`, so the reply is always valid JSON. `app/openui.py` then composes the
-OpenUI program: a `ListBlock` for a summary, a `Table` with three columns for a
-comparison, a `FollowUpBlock` for the next questions, and a `sources` array built from the
-real search results. `pick_layout` chooses the shape from the question's words.
+program with the shadcn library's positional signatures: `CardHeader`, `MarkDownRenderer`,
+`Table`, `BarChart` or `LineChart` with `Series`, `FollowUpBlock`, and `Card`. A prose
+answer that already names a year and a percentage per year can also become a line chart
+through `extract_series`, so a dashboard request degrades to a real chart when the model
+supplies the numbers.
+
+The card has no `sources` argument because the shadcn `Card` accepts only children. The
+browser renders the source chips from the same numbered list the answer cites, so the
+strip and the citations still agree.
 
 This is a deliberate trade. A larger model could write the language directly and produce
-freer layouts. With a 1.7B model on a laptop GPU, a valid interface in three seconds beats
-an ambitious one that fails. The JSON step also makes the sources trustworthy, because
-the model never writes a URL.
+freer layouts. With a 1.7B model on a laptop GPU, a valid interface in about three seconds
+beats an ambitious one that fails. The JSON step also makes the sources trustworthy,
+because the model never writes a URL.
 
 ## Rejected alternatives
 
@@ -352,8 +390,10 @@ the model never writes a URL.
   harder to stream as typed events. A three-node `StateGraph` is smaller and predictable.
 * **A LangGraph checkpointer.** It would duplicate the transcript that SQLite already
   holds. One source of truth is easier to reason about and to query for memory.
-* **A frontend framework and bundler.** The UI is one page and one stream. A build step
-  would add tooling and a deploy artifact for no user-visible gain.
+* **A frontend framework and bundler for the app shell.** The UI is one page and one
+  stream. The generated card is the exception: OpenUI and shadcn are built once into
+  vendored assets, because reproducing that component library by hand would be more code
+  than the whole chat page.
 * **A search API with a key.** It would improve result quality slightly and cost setup
   friction, a second secret, and a vendor dependency. The chain is good enough and can
   be replaced behind `SearchEngine.search`.

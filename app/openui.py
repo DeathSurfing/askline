@@ -68,10 +68,46 @@ SCHEMA: dict[str, Any] = {
             "maxItems": 2,
             "items": {"type": "string"},
         },
+        "chart": {
+            "type": ["object", "null"],
+            "description": "A chart when the results contain comparable numbers. Null otherwise.",
+            "properties": {
+                "kind": {"type": "string", "enum": ["bar", "line", "pie", "donut"]},
+                "title": {"type": "string", "description": "Two to five words."},
+                "labels": {"type": "array", "minItems": 2, "maxItems": 8, "items": {"type": "string"}},
+                "values": {"type": "array", "minItems": 2, "maxItems": 8, "items": {"type": "number"}},
+                "unit": {"type": "string", "description": "Short unit such as ms, %, or USD. Empty when none."},
+            },
+            "required": ["kind", "title", "labels", "values", "unit"],
+            "additionalProperties": False,
+        },
     },
     "required": ["title", "subtitle", "answer", "leftTitle", "rightTitle", "items", "followups"],
     "additionalProperties": False,
 }
+
+
+YEAR_FIRST = re.compile(r"\b((?:19|20)\d{2})\b[^%.;\n]{0,50}?(\d{1,3}(?:\.\d+)?)\s*%")
+VALUE_FIRST = re.compile(r"(\d{1,3}(?:\.\d+)?)\s*%[^.\n]{0,30}?\b((?:19|20)\d{2})\b")
+
+
+def extract_series(text: str) -> dict | None:
+    """Find a year-by-year percentage series in prose, for a chart."""
+    found: dict[str, float] = {}
+    for value, year in VALUE_FIRST.findall(text):
+        found.setdefault(year, float(value))
+    for year, value in YEAR_FIRST.findall(text):
+        found.setdefault(year, float(value))
+    if len(found) < 3:
+        return None
+    ordered = sorted(found.items())[:8]
+    return {
+        "kind": "line",
+        "title": "Reported trend",
+        "labels": [year for year, _ in ordered],
+        "values": [value for _, value in ordered],
+        "unit": "%",
+    }
 
 
 def pick_layout(question: str) -> str:
@@ -91,7 +127,9 @@ def system_prompt(layout: str) -> str:
         "Cite claims inside the answer as [1], [2], using only the supplied numbers. Every factual sentence carries a citation. "
         "Never invent facts, numbers, or URLs. "
         f"{shape} "
-        "The answer is three to five sentences. Followups are two useful next questions."
+        "The answer is three to five sentences. Followups are two useful next questions. "
+        "Add a chart only when the results contain two or more comparable numbers; otherwise set chart to null. "
+        "Never invent chart numbers."
     )
 
 
@@ -155,6 +193,7 @@ def normalize(raw: dict[str, Any], layout: str, sources: list[Source]) -> dict[s
     followups = [q for q in followups if 8 <= len(q) <= 120][:2]
     while len(followups) < 2:
         followups.append("What else is worth checking?")
+    chart = _chart(raw.get("chart"))
     return {
         "title": strip_invalid(_text(raw.get("title"), 70), count) or "Search result",
         "subtitle": strip_invalid(_text(raw.get("subtitle"), 90), count),
@@ -163,6 +202,32 @@ def normalize(raw: dict[str, Any], layout: str, sources: list[Source]) -> dict[s
         "rightTitle": strip_invalid(_text(raw.get("rightTitle"), 40), count) or "Second",
         "items": items[:4],
         "followups": followups,
+        "chart": chart,
+    }
+
+
+def _chart(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    kind = str(raw.get("kind") or "")
+    if kind not in {"bar", "line", "pie", "donut"}:
+        return None
+    labels = [_text(label, 40) for label in raw.get("labels") or []][:8]
+    numbers: list[float] = []
+    for value in (raw.get("values") or [])[:8]:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        numbers.append(float(value))
+    if len(labels) < 2 or len(numbers) != len(labels):
+        return None
+    if any(not label for label in labels):
+        return None
+    return {
+        "kind": kind,
+        "title": _text(raw.get("title"), 50) or "Numbers",
+        "labels": labels,
+        "values": numbers,
+        "unit": _text(raw.get("unit"), 12),
     }
 
 
@@ -178,34 +243,61 @@ def source_literal(sources: list[Source]) -> str:
     return "sources = [" + ", ".join(parts) + "]"
 
 
+def _rows(items: list[dict[str, str]], keys: tuple[str, ...]) -> str:
+    cells = ["[" + ", ".join(quote(item[key]) for key in keys) + "]" for item in items]
+    return "rows = [" + ", ".join(cells) + "]"
+
+
+def chart_lang(chart: dict[str, Any]) -> list[str]:
+    labels = ", ".join(quote(label) for label in chart["labels"])
+    values = ", ".join(str(value) for value in chart["values"])
+    if chart["kind"] in {"pie", "donut"}:
+        refs = ", ".join(f"p{index}" for index in range(1, len(chart["labels"]) + 1))
+        donut = "true" if chart["kind"] == "donut" else "false"
+        lines = [f"chart = PieChart([{refs}], {donut})"]
+        lines += [
+            f"p{index} = Slice({quote(label)}, {value})"
+            for index, (label, value) in enumerate(zip(chart["labels"], chart["values"]), 1)
+        ]
+        return lines
+    component = "BarChart" if chart["kind"] == "bar" else "LineChart"
+    return [
+        f"chart = {component}([{labels}], [s1], \"grouped\", \"\", {quote(chart['unit'])})",
+        f"s1 = Series({quote(chart['title'])}, [{values}])",
+    ]
+
+
 def build_lang(data: dict[str, Any], layout: str, sources: list[Source]) -> str:
+    children = ["header", "answer"]
     lines = [
-        'root = Card([header, answer, body, followups], sources)',
         f"header = CardHeader({quote(data['title'])}, {quote(data['subtitle'])})",
         f"answer = MarkDownRenderer({quote(data['answer'])})",
     ]
+    if data.get("chart"):
+        children.append("chart")
+        lines += chart_lang(data["chart"])
     items = data["items"]
     if layout == "comparison":
-        labels = ", ".join(quote(item["label"]) for item in items)
-        lefts = ", ".join(quote(item["left"] or item["text"]) for item in items)
-        rights = ", ".join(quote(item["right"]) for item in items)
         lines += [
-            "body = Table([c1, c2, c3])",
-            f'c1 = Col("Criterion", [{labels}])',
-            f"c2 = Col({quote(data['leftTitle'])}, [{lefts}])",
-            f"c3 = Col({quote(data['rightTitle'])}, [{rights}])",
+            "body = Table([c1, c2, c3], rows)",
+            'c1 = Col("Criterion")',
+            f"c2 = Col({quote(data['leftTitle'])})",
+            f"c3 = Col({quote(data['rightTitle'])})",
+            _rows(items, ("label", "left", "right")),
         ]
     else:
-        refs = ", ".join(f"i{index}" for index in range(1, len(items) + 1))
         lines += [
-            f'body = ListBlock([{refs}], "number")',
-            *(f"i{index} = ListItem({quote(item['label'])}, {quote(item['text'])})" for index, item in enumerate(items, 1)),
+            "body = Table([c1, c2], rows)",
+            'c1 = Col("Point")',
+            'c2 = Col("Detail")',
+            _rows(items, ("label", "text")),
         ]
+    children += ["body", "followups"]
     lines += [
         "followups = FollowUpBlock([q1, q2])",
         f"q1 = FollowUpItem({quote(data['followups'][0])})",
         f"q2 = FollowUpItem({quote(data['followups'][1])})",
-        source_literal(sources),
+        f"root = Card([{', '.join(children)}])",
     ]
     return "\n".join(lines)
 
@@ -260,6 +352,8 @@ async def generate_ui(store: Store, engine: SearchEngine, cfg: ChatConfig, quest
             return {
                 "lang": build_lang(data, layout, sources),
                 "layout": layout,
+                "title": data["title"],
+                "answer": data["answer"],
                 "sources": [item.to_dict() for item in sources],
                 "question": question,
                 "elapsed_ms": int((time.monotonic() - started) * 1000),
@@ -270,3 +364,73 @@ async def generate_ui(store: Store, engine: SearchEngine, cfg: ChatConfig, quest
         except (asyncio.TimeoutError, httpx.HTTPError):
             break
     raise OpenUIError("The model did not return a usable interface. Try a narrower question.")
+
+
+def fallback_data(question: str, answer: str) -> dict[str, Any]:
+    """A card that needs no model, used when composition fails or runs long."""
+    sentences = [
+        part.strip()
+        for part in re.split(r"(?<=[.!?])\s+", answer.strip())
+        if len(part.strip()) >= 24
+    ][:4]
+    items = [{"label": f"Point {index}", "text": text} for index, text in enumerate(sentences, 1)]
+    if not items:
+        items = [{"label": "Answer", "text": answer.strip()[:280]}]
+    title = re.sub(r"\s+", " ", question).strip().rstrip("?")
+    title = (title[:1].upper() + title[1:]) if title else "Answer"
+    return {
+        "title": title[:70],
+        "subtitle": "Answer from " + (f"{len(items)} points" if len(items) > 1 else "the latest answer"),
+        "answer": answer.strip(),
+        "items": items[:3],
+        "followups": ["What should I check next?", "Show me the sources in more detail."],
+    }
+
+
+def card_prompt(question: str, answer: str, sources: list[Source]) -> str:
+    listing = "\n".join(f"[{item.index}] {item.title}: {item.snippet[:180]}" for item in sources[:5])
+    return (
+        "Turn this answer into a small interface. Do not change the answer and do not add facts. "
+        "Write a short title, a one-line subtitle, three or four item rows that pull out the main points, "
+        "and two natural follow-up questions. Each item label is at most four words. "
+        "If the answer contains four or more comparable numbers over time or across categories, "
+        "add a chart object with their labels and values; otherwise omit chart.\n\n"
+        f"Question: {question}\n\nAnswer:\n{answer}\n\nSources:\n{listing}\n\n"
+        "Return JSON only, with the same answer text in the answer field."
+    )
+
+
+async def compose_ui(
+    cfg: ChatConfig,
+    question: str,
+    answer: str,
+    sources: list[Source],
+) -> dict[str, Any]:
+    """Build a card around an answer that was already produced with history and sources."""
+    started = time.monotonic()
+    layout = pick_layout(question)
+    data: dict[str, Any] | None = None
+    if answer.strip():
+        messages: list[Any] = [
+            SystemMessage(content=system_prompt(layout) + "\n\nJSON shape:\n" + json.dumps(SCHEMA, indent=2)),
+            HumanMessage(content=card_prompt(question, answer, sources)),
+        ]
+        try:
+            text = await asyncio.wait_for(complete(cfg, messages), timeout=30.0)
+            candidate = normalize(parse_json(text), layout, sources)
+            candidate["answer"] = answer.strip()
+            data = candidate
+        except Exception:
+            data = None
+    if data is None:
+        layout = "summary"
+        data = fallback_data(question, answer)
+    return {
+        "lang": build_lang(data, layout, sources),
+        "layout": layout,
+        "title": data["title"],
+        "answer": data["answer"],
+        "sources": [item.to_dict() for item in sources],
+        "question": question,
+        "elapsed_ms": int((time.monotonic() - started) * 1000),
+    }
